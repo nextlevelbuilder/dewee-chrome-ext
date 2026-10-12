@@ -33,6 +33,8 @@ jobs:
         with:
           name: dewee-chrome-ext
           path: .output/*.zip
+          # .output is a dot directory, which upload-artifact skips unless told otherwise.
+          include-hidden-files: true
           if-no-files-found: error
 
   e2e:
