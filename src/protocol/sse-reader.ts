@@ -38,6 +38,8 @@ export class SseParser {
   private dataSize = 0;
   private id: string | undefined;
   private failed = false;
+  /** The last chunk ended with a `\r` line ending; a `\n` opening the next chunk completes that CRLF. */
+  private endedWithCr = false;
 
   constructor(private readonly maxPending = MAX_SSE_PENDING) {}
 
@@ -48,9 +50,12 @@ export class SseParser {
 
   push(chunk: string): RawSseFrame[] {
     if (this.failed) throw new SseProtocolError('The stream already failed');
+    if (chunk === '') return [];
     const frames: RawSseFrame[] = [];
-    let start = 0;
-    NEWLINE.lastIndex = 0;
+    // A CRLF split across chunks is one line ending: its `\r` already ended the line.
+    let start = this.endedWithCr && chunk.startsWith('\n') ? 1 : 0;
+    this.endedWithCr = chunk.endsWith('\r');
+    NEWLINE.lastIndex = start;
     for (let match = NEWLINE.exec(chunk); match; match = NEWLINE.exec(chunk)) {
       const line = this.buffer + chunk.slice(start, match.index);
       this.buffer = '';
