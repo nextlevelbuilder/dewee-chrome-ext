@@ -200,10 +200,10 @@ describe('readSseFrames', () => {
     expect(cancelled).toBe(error);
   });
 
-  it('still throws the protocol error when cancelling the body rejects', async () => {
+  it('still yields the earlier frame and throws the protocol error when cancelling the body rejects', async () => {
     const body = new ReadableStream<Uint8Array>({
       start(c) {
-        c.enqueue(new TextEncoder().encode(`data: ${'x'.repeat(200)}`));
+        c.enqueue(new TextEncoder().encode(`event: chat.started\ndata: {}\n\ndata: ${'x'.repeat(200)}`));
       },
       cancel() {
         throw new Error('cancel failed');
@@ -214,6 +214,6 @@ describe('readSseFrames', () => {
       for await (const f of readSseFrames(body, 100)) frames.push(f);
     })().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SseProtocolError);
-    expect(frames).toEqual([]);
+    expect(frames).toEqual([{ event: 'chat.started', data: '{}' }]);
   });
 });

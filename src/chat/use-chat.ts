@@ -567,6 +567,10 @@ export function useChat(ctx: ChatContext | null, hooks: { onSessionKey(key: stri
           }
         } catch (error) {
           if (!live()) return;
+          // The turn already ended with its terminal frame (a continuation that saw `message.completed`
+          // already left the queue): a fault in what follows, such as an oversized line in the same
+          // chunk, must not turn a finished reply into a failure.
+          if (terminal) return;
           if (error instanceof DOMException && error.name === 'AbortError') {
             if (item && !settled) {
               // Stopped before the agent provably got it: it stays queued for "Continue" (the Gateway
