@@ -8,9 +8,15 @@ import type { RawSseFrame } from './chat-events';
  */
 export const MAX_SSE_PENDING = 1024 * 1024;
 
-/** The stream broke the event-stream contract (a line or event over the cap). It is never retried. */
+/**
+ * The stream broke the event-stream contract (a line or event over the cap). It is never retried.
+ * `frames` holds the frames completed earlier in the same chunk, which callers still deliver.
+ */
 export class SseProtocolError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly frames: readonly RawSseFrame[] = [],
+  ) {
     super(message);
     this.name = 'SseProtocolError';
   }
@@ -22,7 +28,8 @@ const NEWLINE = /\r\n|\r|\n/g;
  * Incremental Server-Sent Events parser (WHATWG event-stream format). Feed decoded text chunks;
  * complete frames are returned as soon as their blank-line terminator arrives. Once more than
  * `MAX_SSE_PENDING` code units would be held, `push` drops what it holds and throws
- * `SseProtocolError`, and every later `push` throws too.
+ * `SseProtocolError` carrying the frames that chunk completed before the overflow; every later
+ * `push` throws too.
  */
 export class SseParser {
   private buffer = '';
@@ -48,13 +55,13 @@ export class SseParser {
       const line = this.buffer + chunk.slice(start, match.index);
       this.buffer = '';
       start = match.index + match[0].length;
-      this.limit(line.length);
+      // A parsed line never holds more than its own length, so checking before it is enough.
+      this.limit(line.length, frames);
       const frame = this.line(line);
       if (frame) frames.push(frame);
-      this.limit(0);
     }
     const rest = chunk.length - start;
-    this.limit(this.buffer.length + rest);
+    this.limit(this.buffer.length + rest, frames);
     this.buffer += chunk.slice(start);
     return frames;
   }
@@ -64,7 +71,7 @@ export class SseParser {
   }
 
   /** Throws, dropping everything held, when `extra` more code units would pass the cap. */
-  private limit(extra: number): void {
+  private limit(extra: number, frames: RawSseFrame[]): void {
     if (extra + this.held() <= this.maxPending) return;
     this.failed = true;
     this.buffer = '';
@@ -72,7 +79,7 @@ export class SseParser {
     this.data = [];
     this.dataSize = 0;
     this.id = undefined;
-    throw new SseProtocolError(`An event-stream line or event exceeded ${this.maxPending} characters`);
+    throw new SseProtocolError(`An event-stream line or event exceeded ${this.maxPending} characters`, frames);
   }
 
   private line(line: string): RawSseFrame | null {
@@ -91,17 +98,18 @@ export class SseParser {
     if (value.startsWith(' ')) value = value.slice(1);
     if (field === 'event') this.event = value;
     else if (field === 'data') {
+      // `dataSize` matches the joined `data` length: every line after the first adds a newline.
+      this.dataSize += value.length + (this.data.length > 0 ? 1 : 0);
       this.data.push(value);
-      // The joining newline counts too, so `dataSize` matches the joined `data` length plus one.
-      this.dataSize += value.length + 1;
     } else if (field === 'id') this.id = value;
     return null;
   }
 }
 
 /**
- * Reads a fetch Response body as SSE frames until the stream ends or the signal aborts. Throws
- * `SseProtocolError` when a line or event passes the cap; the body is cancelled then.
+ * Reads a fetch Response body as SSE frames until the stream ends or the signal aborts. When a
+ * line or event passes the cap it cancels the body, yields the frames completed before the
+ * overflow, then throws `SseProtocolError`.
  */
 export async function* readSseFrames(body: ReadableStream<Uint8Array>, maxPending = MAX_SSE_PENDING): AsyncGenerator<RawSseFrame> {
   const reader = body.getReader();
@@ -115,7 +123,10 @@ export async function* readSseFrames(body: ReadableStream<Uint8Array>, maxPendin
     }
     yield* parser.push(decoder.decode() + '\n\n');
   } catch (error) {
-    if (error instanceof SseProtocolError) await reader.cancel(error).catch(() => {});
+    if (error instanceof SseProtocolError) {
+      await reader.cancel(error).catch(() => {});
+      yield* error.frames;
+    }
     throw error;
   } finally {
     reader.releaseLock();

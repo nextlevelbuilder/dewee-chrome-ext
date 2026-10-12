@@ -60,7 +60,8 @@ describe('SseParser', () => {
         expect(parser.pending).toBeLessThanOrEqual(1000);
       }
     }).toThrow(SseProtocolError);
-    // Each line holds 91 (value plus joining newline): the 11th line (96) on top of 910 passes 1000.
+    // The first line holds 90, each later one 91 with its joining newline: the 11th line (96) on top
+    // of 909 passes 1000.
     expect(lines).toBe(10);
     expect(parser.pending).toBe(0);
   });
@@ -84,7 +85,7 @@ describe('SseParser', () => {
     const max = 1000;
     const parser = new SseParser(max);
     // While the data line is read, the held event name (13) plus the whole line ("data: " + value)
-    // must fit; afterwards the name plus the value and its joining newline.
+    // must fit; afterwards the name plus the value.
     const value = 'v'.repeat(max - 13 - 6);
     const text = `event: message.delta\r\ndata: ${value}\r\n\r\n`;
     const frames = [];
@@ -98,6 +99,45 @@ describe('SseParser', () => {
     const parser = new SseParser(max);
     const value = 'v'.repeat(max - 13 - 5);
     expect(() => parser.push(`event: message.delta\ndata: ${value}\n\n`)).toThrow(SseProtocolError);
+  });
+
+  it('counts joined data without an extra newline', () => {
+    const parser = new SseParser();
+    parser.push('data: ab\ndata: cd\n');
+    // "ab\ncd" is 5 code units.
+    expect(parser.pending).toBe(5);
+  });
+
+  it('keeps the frames a chunk completed before an oversized line', () => {
+    const parser = new SseParser(100);
+    let failure: unknown;
+    try {
+      parser.push(`event: chat.started\ndata: {"session_key":"s1"}\n\ndata: ${'x'.repeat(200)}\n`);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(SseProtocolError);
+    expect((failure as SseProtocolError).frames).toEqual([{ event: 'chat.started', data: '{"session_key":"s1"}' }]);
+    expect(parser.pending).toBe(0);
+  });
+
+  it('stops an oversized id line', () => {
+    const parser = new SseParser(100);
+    expect(() => parser.push(`id: ${'i'.repeat(200)}\n`)).toThrow(SseProtocolError);
+    expect(parser.pending).toBe(0);
+  });
+
+  it('counts a held id toward the cap', () => {
+    const parser = new SseParser(100);
+    parser.push(`id: ${'i'.repeat(90)}\n`);
+    expect(parser.pending).toBe(90);
+    expect(() => parser.push(`data: ${'d'.repeat(20)}`)).toThrow(SseProtocolError);
+  });
+
+  it('stops an oversized comment line', () => {
+    const parser = new SseParser(100);
+    expect(() => parser.push(`: ${'c'.repeat(200)}\n`)).toThrow(SseProtocolError);
+    expect(parser.pending).toBe(0);
   });
 });
 
@@ -138,5 +178,42 @@ describe('readSseFrames', () => {
     expect(frames).toEqual([]);
     // 16 chunks fill the cap exactly; the 17th passes it. A few extra pulls are read-ahead.
     expect(pulls).toBeLessThan(20);
+  });
+
+  it('yields the frames before an oversized line in the same chunk, then fails', async () => {
+    const text = `event: chat.started\ndata: {"session_key":"s1"}\n\nevent: message.completed\ndata: {}\n\ndata: ${'x'.repeat(200)}\n`;
+    let cancelled: unknown;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(text));
+      },
+      cancel(reason) {
+        cancelled = reason;
+      },
+    });
+    const frames: RawSseFrame[] = [];
+    const error = await (async () => {
+      for await (const f of readSseFrames(body, 100)) frames.push(f);
+    })().catch((e: unknown) => e);
+    expect(frames.map((f) => f.event)).toEqual(['chat.started', 'message.completed']);
+    expect(error).toBeInstanceOf(SseProtocolError);
+    expect(cancelled).toBe(error);
+  });
+
+  it('still throws the protocol error when cancelling the body rejects', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(`data: ${'x'.repeat(200)}`));
+      },
+      cancel() {
+        throw new Error('cancel failed');
+      },
+    });
+    const frames: RawSseFrame[] = [];
+    const error = await (async () => {
+      for await (const f of readSseFrames(body, 100)) frames.push(f);
+    })().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SseProtocolError);
+    expect(frames).toEqual([]);
   });
 });
