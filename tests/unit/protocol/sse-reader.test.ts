@@ -37,6 +37,28 @@ describe('SseParser', () => {
     expect(parser.pending).toBe(0);
   });
 
+  it('applies the cap exactly after a split CRLF, keeping the frame the LF completed', () => {
+    const parser = new SseParser(20);
+    expect(parser.push('data: a\r')).toEqual([]);
+    // The LF that ends the split CRLF is not part of the next line: 20 code units still fit.
+    expect(parser.push(`\n\ndata: ${'x'.repeat(14)}`)).toEqual([{ event: 'message', data: 'a' }]);
+    expect(parser.pending).toBe(20);
+    expect(() => parser.push('x')).toThrow(SseProtocolError);
+  });
+
+  it('keeps the frame a split CRLF completed when the rest of that chunk passes the cap', () => {
+    const parser = new SseParser(20);
+    parser.push('data: a\r');
+    let failure: unknown;
+    try {
+      parser.push(`\n\ndata: ${'x'.repeat(200)}`);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(SseProtocolError);
+    expect((failure as SseProtocolError).frames).toEqual([{ event: 'message', data: 'a' }]);
+  });
+
   it('still accepts lone CR line endings', () => {
     expect(new SseParser().push('data: a\rdata: b\r\r')).toEqual([{ event: 'message', data: 'a\nb' }]);
   });
