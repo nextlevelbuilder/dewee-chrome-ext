@@ -94,7 +94,7 @@ const FIXABLE_REFUSAL_CODES = new Set(['scope_required', 'owner_binding_required
 const isOffline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
 
 /** Status-0 codes of a request that may have reached the server. Other status-0 codes come from the panel. */
-const TRANSPORT_CODES = new Set(['network_error', 'timeout', 'stream_stalled', 'connection_lost', 'invalid_response', 'runtime_request_failed']);
+const TRANSPORT_CODES = new Set(['network_error', 'timeout', 'stream_stalled', 'connection_lost', 'protocol_error', 'invalid_response', 'runtime_request_failed']);
 
 /**
  * True only when the server provably did not receive the request: the panel failed before the

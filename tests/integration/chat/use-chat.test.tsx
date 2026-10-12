@@ -6,6 +6,7 @@ import type { ChatMessage } from '../../../src/chat/chat-state';
 import { addPendingContinuation, loadPendingContinuations, removePendingContinuation } from '../../../src/chat/pending-continuations';
 import { useChat, type ChatContext } from '../../../src/chat/use-chat';
 import type { ChatEvent } from '../../../src/protocol/chat-events';
+import { SseProtocolError } from '../../../src/protocol/sse-reader';
 import { parseUiAction } from '../../../src/protocol/ui-action';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -988,6 +989,22 @@ describe('useChat delivery proof', () => {
     expect(lastMessage(result.current.state.messages)).toMatchObject({ error: { code: 'delivery_unconfirmed' }, recover: 'sessions' });
     expect(result.current.state.messages.some((m) => m.retryText)).toBe(false);
     expect(logged).toHaveBeenCalledWith('Chat stream failed', bug);
+  });
+
+  it('treats an oversized stream (protocol_error) as uncertain: no "Send again" and no automatic resend', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // eslint-disable-next-line require-yield -- the body fails before the first frame
+    const { client, methods } = fakeClient(async function* () {
+      throw new DeweeApiError(0, 'protocol_error', 'The reply broke the stream format', undefined, true, new SseProtocolError('too large'));
+    });
+    const { result } = renderHook(() => useChat(context(client), hooks()));
+
+    void result.current.send('Hello');
+
+    await waitFor(() => expect(lastMessage(result.current.state.messages)?.error).toBeDefined());
+    expect(lastMessage(result.current.state.messages)).toMatchObject({ error: { code: 'delivery_unconfirmed' }, recover: 'sessions' });
+    expect(result.current.state.messages.some((m) => m.retryText)).toBe(false);
+    expect(methods.streamChat).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a manual retry for a continuation lost before delivery in a known session, and resends it once', async () => {

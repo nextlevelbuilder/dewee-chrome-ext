@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { mapRuntimeFrame, type ChatEvent, type RawSseFrame } from '@/protocol/chat-events';
-import { readSseFrames } from '@/protocol/sse-reader';
+import { readSseFrames, SseProtocolError } from '@/protocol/sse-reader';
 import { DeweeApiError, errorFromResponse } from './errors';
 import {
   abortResponse,
@@ -160,9 +160,13 @@ export class DeweeClient {
       }
     } catch (error) {
       if (stalled) throw new DeweeApiError(0, 'stream_stalled', 'The stream stopped responding', undefined, responded);
-      // Any other fault after the 200 (a decoder or mapping bug) still means the server took the
-      // turn: mark it so callers reconcile instead of offering a resend. The original is the cause.
+      // Any other fault after the 200 (an oversized line or event, a decoder or mapping bug) still
+      // means the server took the turn: mark it so callers reconcile instead of offering a resend.
+      // The original is the cause.
       if (responded && !signal?.aborted && !(error instanceof DeweeApiError)) {
+        if (error instanceof SseProtocolError) {
+          throw new DeweeApiError(0, 'protocol_error', 'The reply broke the stream format', undefined, true, error);
+        }
         throw new DeweeApiError(0, 'runtime_request_failed', 'The reply could not be read', undefined, true, error);
       }
       throw error;
