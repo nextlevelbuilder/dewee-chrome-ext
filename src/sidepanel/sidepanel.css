@@ -1,0 +1,369 @@
+@import '../shared/components.css';
+
+.welcome {
+  display: grid;
+  gap: 14px;
+  padding: 20px 16px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+.brand-title {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100%;
+  min-width: 0;
+}
+.shell-header {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.brand {
+  font-size: 15px;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: auto;
+  flex: none;
+}
+.status-dot.online {
+  background: var(--verdigris);
+}
+.status-dot.offline {
+  background: var(--danger);
+}
+
+.agent-picker {
+  position: relative;
+  flex: 0 1 50%;
+  min-width: 0;
+}
+.picker-button {
+  width: 100%;
+  justify-content: space-between;
+  min-height: 30px;
+}
+.pin {
+  color: var(--amber);
+}
+.popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 10;
+  width: min(320px, 92vw);
+  padding: 6px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 6px;
+}
+.listbox {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+}
+.option {
+  display: grid;
+  gap: 1px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.option.active,
+.option[aria-selected='true'] {
+  background: var(--paper-3);
+}
+.listbox .empty {
+  padding: 8px;
+}
+
+.session-list {
+  border-bottom: 1px solid var(--hairline);
+  padding: 8px 10px;
+  max-height: 40vh;
+  overflow: auto;
+  background: var(--paper);
+}
+.session-list ul {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.session-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.session-item {
+  width: 100%;
+  display: grid;
+  gap: 1px;
+  text-align: left;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+.session-item:hover,
+.session-item.active {
+  background: var(--paper-3);
+}
+
+.chat-main {
+  overflow: auto;
+  min-height: 0;
+}
+.messages {
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+.message-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.message {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.message-user {
+  justify-self: end;
+  max-width: 88%;
+  padding: 8px 10px;
+  border-radius: var(--radius) var(--radius) 2px var(--radius);
+  background: var(--electric);
+  color: var(--on-electric);
+}
+.message-user .plain {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.message-assistant {
+  max-width: 100%;
+}
+.markdown {
+  word-break: break-word;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown pre {
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--paper-3);
+  font: 12px/1.45 var(--font-mono);
+}
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.markdown table {
+  border-collapse: collapse;
+  display: block;
+  overflow: auto;
+}
+.markdown td,
+.markdown th {
+  border: 1px solid var(--hairline);
+  padding: 3px 6px;
+}
+.markdown a {
+  color: var(--indigo);
+}
+.tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tool {
+  font: 11px/18px var(--font-mono);
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--paper-3);
+  color: var(--ink-muted);
+}
+.tool-running {
+  border-color: var(--electric);
+}
+.tool-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.typing {
+  display: inline-block;
+  width: 28px;
+  height: 10px;
+  background: radial-gradient(circle, var(--ink-soft) 2px, transparent 3px) 0 50% / 9px 10px repeat-x;
+  animation: pulse 1s infinite ease-in-out;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing {
+    animation: none;
+  }
+}
+.message-error {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+.empty-state {
+  margin: 24px 0;
+  text-align: center;
+  color: var(--ink-soft);
+}
+.older {
+  justify-self: center;
+}
+
+.action-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  box-shadow: var(--shadow);
+}
+.action-card.status-pending {
+  border-color: var(--electric);
+}
+.action-card-head {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.action-card-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.action-card-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.status-pill {
+  flex: none;
+  font: 600 10px/18px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--paper-3);
+  color: var(--ink-muted);
+}
+.status-pill-pending {
+  color: var(--indigo);
+}
+.status-pill-resolved {
+  color: var(--verdigris);
+}
+.status-pill-failed,
+.status-pill-expired,
+.status-pill-cancelled {
+  color: var(--danger);
+}
+.card-form {
+  display: grid;
+  gap: 10px;
+}
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.secret-head p {
+  margin: 0;
+}
+.secret-destination {
+  font-weight: 600;
+}
+.choice-list {
+  display: grid;
+  gap: 6px;
+}
+.choice-button {
+  display: grid;
+  justify-items: start;
+  text-align: left;
+  min-height: 38px;
+  padding: 6px 10px;
+}
+.choice-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.command-preview {
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--paper-3);
+  font: 12px/1.45 var(--font-mono);
+}
+.progress {
+  width: 100%;
+}
+
+.composer {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.composer-input {
+  resize: vertical;
+  min-height: 52px;
+  max-height: 40vh;
+}
+.composer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
