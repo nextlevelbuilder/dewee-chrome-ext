@@ -50,6 +50,8 @@ export class SseParser {
 
   push(chunk: string): RawSseFrame[] {
     if (this.failed) throw new SseProtocolError('The stream already failed');
+    // Must return before `endedWithCr` is updated: an empty chunk between the `\r` and `\n` of a
+    // split CRLF would otherwise clear the flag and the `\n` would end a second, empty line.
     if (chunk === '') return [];
     const frames: RawSseFrame[] = [];
     // A CRLF split across chunks is one line ending: its `\r` already ended the line.

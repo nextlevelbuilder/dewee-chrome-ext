@@ -17,6 +17,26 @@ describe('SseParser', () => {
     expect(parser.push('\ndata: y\r\n\r\n')).toEqual([{ event: 'x', data: 'y' }]);
   });
 
+  it('joins a CRLF split by an empty chunk', () => {
+    const parser = new SseParser();
+    expect(parser.push('data: a\r')).toEqual([]);
+    expect(parser.push('')).toEqual([]);
+    expect(parser.push('\n\n')).toEqual([{ event: 'message', data: 'a' }]);
+  });
+
+  it('gives one frame, not two, when the LF of a split CRLF opens the next chunk', () => {
+    const parser = new SseParser();
+    expect(parser.push('data: a\r')).toEqual([]);
+    expect(parser.push('\n\n')).toEqual([{ event: 'message', data: 'a' }]);
+  });
+
+  it('ends a frame with CR CR and treats the LF that follows as the end of that CRLF', () => {
+    const parser = new SseParser();
+    expect(parser.push('data: a\r\r')).toEqual([{ event: 'message', data: 'a' }]);
+    expect(parser.push('\n')).toEqual([]);
+    expect(parser.pending).toBe(0);
+  });
+
   it('still accepts lone CR line endings', () => {
     expect(new SseParser().push('data: a\rdata: b\r\r')).toEqual([{ event: 'message', data: 'a\nb' }]);
   });
