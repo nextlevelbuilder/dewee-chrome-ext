@@ -1,0 +1,30 @@
+{
+  "schema": "dewee.ui-action.v1",
+  "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a10",
+  "kind": "choice_request",
+  "status": "pending",
+  "title": "What would you like your workspace to help with?",
+  "body": "Pick everything that fits, or describe it in your own words.",
+  "payload": {
+    "purpose": "goal",
+    "options": [
+      {
+        "id": "research",
+        "label": "Research and summaries",
+        "description": "Find, read and summarize information"
+      },
+      {
+        "id": "customer_support",
+        "label": "Customer support"
+      },
+      {
+        "id": "coding",
+        "label": "Software development"
+      }
+    ],
+    "multi": true,
+    "allow_free_text": true
+  },
+  "created_at": "2026-10-06T10:00:00Z",
+  "expires_at": "2026-10-13T10:00:00Z"
+}

@@ -1,0 +1,975 @@
+{
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "dewee.ui-action.v1"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "choice_request",
+        "secret_request",
+        "oauth_request",
+        "permission_request",
+        "install_request",
+        "upload_request",
+        "plan_review",
+        "connection_test",
+        "command_preview",
+        "setup_progress",
+        "handoff"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "resolved",
+        "cancelled",
+        "expired",
+        "failed"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "payload": {
+      "type": "object"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "payload.choice_request": {
+      "type": "object",
+      "properties": {
+        "purpose": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "label"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 12
+        },
+        "multi": {
+          "type": "boolean"
+        },
+        "allow_free_text": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "options"
+      ],
+      "additionalProperties": false
+    },
+    "payload.command_preview": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "description": {
+          "type": "string"
+        },
+        "policy_class": {
+          "type": "string"
+        },
+        "policy_outcome": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "payload.connection_test": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "provider",
+                "channel_instance",
+                "cli_agent_credential",
+                "mcp_server"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "credential_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "payload.handoff": {
+      "type": "object",
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "super_agent",
+            "channel_probe"
+          ]
+        },
+        "session_key": {
+          "type": "string"
+        },
+        "agent_key": {
+          "type": "string"
+        },
+        "channel_type": {
+          "type": "string"
+        },
+        "channel_instance_id": {
+          "type": "string"
+        },
+        "probe_expires_at": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "purpose"
+      ],
+      "additionalProperties": false
+    },
+    "payload.install_request": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "package": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "package"
+      ],
+      "additionalProperties": false
+    },
+    "payload.oauth_request": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "server_id": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "additionalProperties": false
+    },
+    "payload.permission_request": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "risk_class": {
+          "type": "string"
+        },
+        "command_path": {
+          "type": "string"
+        },
+        "command": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "confirm_name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "risk_class",
+        "command_path"
+      ],
+      "additionalProperties": false
+    },
+    "payload.plan_review": {
+      "type": "object",
+      "properties": {
+        "plan_revision": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "plan_revision"
+      ],
+      "additionalProperties": false
+    },
+    "payload.secret_request": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "provider",
+                "channel_instance",
+                "cli_agent_credential",
+                "mcp_server",
+                "tts",
+                "stt"
+              ]
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "create",
+                "update"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "provider_type": {
+              "type": "string"
+            },
+            "channel_type": {
+              "type": "string"
+            },
+            "api_base": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "binary_name": {
+              "type": "string"
+            },
+            "agent_key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "mode"
+          ],
+          "additionalProperties": false
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "secret",
+                  "text"
+                ]
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "target",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "payload.setup_progress": {
+      "type": "object",
+      "properties": {
+        "plan_revision": {
+          "type": "integer"
+        },
+        "completed": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "current_step_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_revision",
+        "completed",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "payload.upload_request": {
+      "type": "object",
+      "properties": {
+        "purpose": {
+          "type": "string"
+        },
+        "accept": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_bytes": {
+          "type": "integer"
+        },
+        "multiple": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "purpose",
+        "max_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "response.choice_request": {
+      "type": "object",
+      "properties": {
+        "selected": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "free_text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "response.command_preview": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": [
+            "confirm",
+            "cancel"
+          ]
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "response.connection_test": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "response.oauth_request": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "response.plan_review": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": [
+            "approve_all",
+            "approve_essential",
+            "edit"
+          ]
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "response.secret_request": {
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "response.upload_request": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "result.choice_request": {
+      "type": "object",
+      "properties": {
+        "selected": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "free_text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "result.command_preview": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "result.connection_test": {
+      "type": "object",
+      "properties": {
+        "target_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error_class": {
+          "type": "string"
+        },
+        "recovery_action": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target_type",
+        "ok",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "result.handoff": {
+      "type": "object",
+      "properties": {
+        "session_key": {
+          "type": "string"
+        },
+        "inbound_ok": {
+          "type": "boolean"
+        },
+        "outbound_ok": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "result.install_request": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "result.oauth_request": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "credential_ref": {
+          "type": "string"
+        },
+        "error_code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "connected"
+      ],
+      "additionalProperties": false
+    },
+    "result.permission_request": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "approved",
+            "denied",
+            "expired"
+          ]
+        }
+      },
+      "required": [
+        "approval_id",
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "result.plan_review": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "string"
+        },
+        "plan_revision": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "decision",
+        "plan_revision"
+      ],
+      "additionalProperties": false
+    },
+    "result.secret_request": {
+      "type": "object",
+      "properties": {
+        "target_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "credential_ref": {
+          "type": "string"
+        },
+        "error_code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_type",
+        "connected",
+        "verified"
+      ],
+      "additionalProperties": false
+    },
+    "result.setup_progress": {
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "completed",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "result.upload_request": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "dewee.ui-action.v1",
+  "required": [
+    "schema",
+    "id",
+    "kind",
+    "status",
+    "title",
+    "payload",
+    "created_at",
+    "expires_at"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "choice_request"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.choice_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "secret_request"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.secret_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "oauth_request"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.oauth_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "permission_request"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.permission_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "install_request"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.install_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "upload_request"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.upload_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "plan_review"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.plan_review"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "connection_test"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.connection_test"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "command_preview"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.command_preview"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "setup_progress"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.setup_progress"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "handoff"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/payload.handoff"
+          }
+        }
+      }
+    }
+  ]
+}
