@@ -7,6 +7,7 @@ import type { DeweeApiError } from '@/api/errors';
 import { clearCredential } from '@/auth/credential-store';
 import { ConnectForm } from '@/shared/ConnectForm';
 import { errorText, I18nContext, useI18n } from '@/shared/i18n';
+import { BrandMark } from '@/shared/icons';
 import { activeProfile } from '@/shared/settings';
 import { useSettings } from '@/shared/use-settings';
 import { ChatShell } from './ChatShell';
@@ -15,10 +16,15 @@ import './sidepanel.css';
 function Welcome({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
   return (
-    <div className="welcome">
-      <h1 className="brand-title">Dewee</h1>
-      <p className="muted">{t('connect.intro')}</p>
-      {children}
+    <div className="welcome-page drum-texture">
+      <div className="welcome">
+        <div className="welcome-head">
+          <BrandMark size={64} />
+          <h1 className="brand-title">Dewee</h1>
+          <p className="muted">{t('connect.intro')}</p>
+        </div>
+        <div className="welcome-card">{children}</div>
+      </div>
     </div>
   );
 }

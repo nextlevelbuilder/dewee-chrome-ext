@@ -3,7 +3,7 @@
  * conversation list and the chat. Every request is scoped to the selected profile + workspace;
  * a failure is shown for that scope and never retried against another workspace or profile.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { createClient, pageAuthAdapter } from '@/api/client-factory';
 import { isApiError, type DeweeApiError } from '@/api/errors';
@@ -11,6 +11,7 @@ import { useChat } from '@/chat/use-chat';
 import type { RespondFn } from '@/credentials/respond-types';
 import { callBackground } from '@/protocol/messages';
 import { errorText, useI18n } from '@/shared/i18n';
+import { BrandMark, IconCompose, IconSettings, IconSidebar } from '@/shared/icons';
 import { withSelectedWorkspace, withWorkspaceSelection, workspaceSelectionOf, type Profile, type Settings } from '@/shared/settings';
 import { AgentPicker } from './components/AgentPicker';
 import { Composer } from './components/Composer';
@@ -56,6 +57,10 @@ export function ChatShell({
   const [showSessions, setShowSessions] = useState(false);
   const [sessionLimit, setSessionLimit] = useState(20);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const drawerToggleRef = useRef<HTMLButtonElement>(null);
+  /** Where focus goes once the drawer has closed and the rest of the panel is no longer inert. */
+  const drawerReturn = useRef<'toggle' | 'composer'>('toggle');
+  const drawerWasOpen = useRef(false);
 
   const workspaces = useWorkspaces(client, onAuthError);
   const remembered = settings.selections[profile.id]?.workspaceId;
@@ -139,15 +144,37 @@ export function ChatShell({
   );
 
   const busy = chat.state.phase === 'streaming';
+  // Without an agent there is no list to show; forget the request so the drawer does not reopen by itself later.
+  if (showSessions && !agentKey) setShowSessions(false);
+  const drawerOpen = showSessions && !!agentKey;
+  const openDrawer = useCallback(() => setShowSessions(true), []);
+  const closeDrawer = useCallback(() => {
+    drawerReturn.current = 'toggle';
+    setShowSessions(false);
+  }, []);
   const newChat = useCallback(() => {
     setSession(undefined);
+    drawerReturn.current = 'composer';
     setShowSessions(false);
     composerRef.current?.focus();
   }, [setSession]);
 
+  // Focus can only move back once the panel has rendered without inert; focusing from the
+  // click handler would land on an inert element and drop focus to the page body.
+  useLayoutEffect(() => {
+    if (drawerWasOpen.current && !drawerOpen) (drawerReturn.current === 'composer' ? composerRef : drawerToggleRef).current?.focus();
+    drawerWasOpen.current = drawerOpen;
+  }, [drawerOpen]);
+
+
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.altKey && (event.key === 'n' || event.key === 'N')) {
+      if (event.key === 'Escape' && drawerOpen) {
+        // Handled at the window so it still works after focus falls out of a re-rendered list.
+        event.preventDefault();
+        closeDrawer();
+      } else if (event.altKey && (event.key === 'n' || event.key === 'N')) {
         event.preventDefault();
         // Same rule as the button: a running reply is stopped first, never abandoned.
         if (!busy) newChat();
@@ -158,19 +185,35 @@ export function ChatShell({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [newChat, busy]);
+  }, [newChat, busy, drawerOpen, closeDrawer]);
 
   const deweeUrl = workspaceId && profile.kind === 'cloud' ? `${profile.origin}/workspaces/${encodeURIComponent(workspaceId)}` : profile.origin;
   const profileOptions = settings.profiles;
 
   return (
     <div className="shell">
+      {/* While the drawer is open the rest of the panel is inert, so focus and screen readers stay in it. */}
+      <div className="shell-content" inert={drawerOpen || undefined}>
       <header className="shell-header">
         <div className="header-row">
-          <strong className="brand">Dewee</strong>
+          {agentKey ? (
+            <button
+              ref={drawerToggleRef}
+              type="button"
+              className="btn btn-ghost icon"
+              aria-label={t('sessions.toggle')}
+              title={t('sessions.toggle')}
+              aria-expanded={drawerOpen}
+              aria-controls="session-drawer"
+              onClick={openDrawer}
+            >
+              <IconSidebar />
+            </button>
+          ) : null}
+          <BrandMark size={26} />
           {profileOptions.length > 1 ? (
             <select
-              className="input compact"
+              className="input compact profile-select"
               aria-label={t('header.profile')}
               value={profile.id}
               onChange={(e) => {
@@ -185,14 +228,23 @@ export function ChatShell({
               ))}
             </select>
           ) : (
-            <span className="muted small truncate">{profile.name}</span>
+            <span className="profile-name truncate">{profile.name}</span>
           )}
-          <span className={online ? 'status-dot online' : 'status-dot offline'} role="status" aria-label={online ? t('app.online') : t('app.offline')} title={online ? t('app.online') : t('app.offline')} />
+          <span className={online ? 'status-dot online' : 'status-dot offline'} role="status" aria-label={online ? t('app.online') : t('app.offline')} title={online ? t('app.online') : t('app.offline')}>
+            {/* Live regions announce content changes, not label changes. */}
+            <span className="sr-only">{online ? t('app.online') : t('app.offline')}</span>
+          </span>
+          <span className="grow" />
+          {agentKey ? (
+            <button type="button" className="btn btn-ghost icon" aria-label={t('sessions.new')} title={`${t('sessions.new')} (Alt+N)`} onClick={newChat} disabled={busy}>
+              <IconCompose />
+            </button>
+          ) : null}
           <button type="button" className="btn btn-ghost icon" aria-label={t('app.settings')} title={t('app.settings')} onClick={() => void browser.runtime.openOptionsPage()}>
-            ⚙
+            <IconSettings />
           </button>
         </div>
-        <div className="header-row">
+        <div className="header-row header-controls">
           {workspaces.loading ? <div className="skeleton grow" style={{ height: 32 }} /> : null}
           {workspaceList.length ? (
             <select
@@ -245,33 +297,7 @@ export function ChatShell({
           </p>
         ) : null}
         {agents.data && agentList.length === 0 ? <p className="notice">{t('header.noAgents')}</p> : null}
-        {agentKey ? (
-          <div className="header-row">
-            <button type="button" className="btn btn-ghost small" aria-expanded={showSessions} onClick={() => setShowSessions((v) => !v)}>
-              ☰ {t('sessions.toggle')}
-            </button>
-            <span className="grow" />
-            <button type="button" className="btn btn-ghost small" onClick={newChat} title="Alt+N" disabled={busy}>
-              + {t('sessions.new')}
-            </button>
-          </div>
-        ) : null}
       </header>
-
-      {showSessions && agentKey ? (
-        <SessionList
-          state={sessions}
-          current={sessionKey}
-          onSelect={(key) => {
-            setSession(key);
-            setShowSessions(false);
-          }}
-          onNew={newChat}
-          onMore={() => setSessionLimit((n) => Math.min(n + 20, MAX_SESSION_LIMIT))}
-          canLoadMore={sessionLimit < MAX_SESSION_LIMIT}
-          onRetry={sessions.reload}
-        />
-      ) : null}
 
       <main className="chat-main">
         {agentKey && workspaceId ? (
@@ -296,6 +322,28 @@ export function ChatShell({
           onSend={(text) => chat.send(text)}
           onStop={() => void chat.stop()}
         />
+      ) : null}
+      </div>
+
+      {drawerOpen ? (
+        <div className="drawer" id="session-drawer" role="dialog" aria-modal="true" aria-label={t('sessions.title')}>
+          <div className="drawer-scrim" aria-hidden="true" onClick={closeDrawer} />
+          <SessionList
+            state={sessions}
+            current={sessionKey}
+            busy={busy}
+            onSelect={(key) => {
+              setSession(key);
+              drawerReturn.current = 'composer';
+              setShowSessions(false);
+            }}
+            onNew={newChat}
+            onClose={closeDrawer}
+            onMore={() => setSessionLimit((n) => Math.min(n + 20, MAX_SESSION_LIMIT))}
+            canLoadMore={sessionLimit < MAX_SESSION_LIMIT}
+            onRetry={sessions.reload}
+          />
+        </div>
       ) : null}
     </div>
   );

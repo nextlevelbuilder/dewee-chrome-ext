@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { ConnectForm } from '@/shared/ConnectForm';
 import { removeProfile, signOutProfile, verifyProfile } from '@/shared/connect';
 import { errorText, I18nContext, useI18n } from '@/shared/i18n';
+import { BrandMark, IconLock, IconPlus } from '@/shared/icons';
 import { localePrefs, themes, type Profile } from '@/shared/settings';
 import { useSettings, type SettingsState } from '@/shared/use-settings';
 import './options.css';
@@ -28,11 +29,15 @@ function ProfileRow({ profile, active, connected, update }: { profile: Profile; 
   return (
     <li className="profile-row" data-profile-kind={profile.kind}>
       <div className="profile-main">
-        <strong>{profile.name}</strong>
-        {active ? <span className="badge">{t('settings.active')}</span> : null}
-        <span className="muted small block mono">{profile.origin}</span>
+        <div className="profile-title">
+          <span className={connected ? 'conn-dot on' : 'conn-dot'} aria-hidden="true" />
+          <strong className="truncate">{profile.name}</strong>
+          {active ? <span className="badge">{t('settings.active')}</span> : null}
+        </div>
+        <span className="muted small block mono truncate">{profile.origin}</span>
         <span className="muted small block">
-          {profile.kind === 'cloud' ? t('connect.cloud') : t('connect.selfHosted')} · {connected ? status || '✓' : t('settings.notConnected')}
+          {profile.kind === 'cloud' ? t('connect.cloud') : t('connect.selfHosted')}
+          {connected ? (status ? ` · ${status}` : '') : ` · ${t('settings.notConnected')}`}
         </span>
       </div>
       <div className="profile-actions">
@@ -89,12 +94,15 @@ export function Settings() {
   return (
     <I18nContext.Provider value={{ t, locale }}>
       <main className="options">
-        <h1>{t('settings.title')}</h1>
+        <header className="options-head">
+          <BrandMark size={40} />
+          <h1>{t('settings.title')}</h1>
+        </header>
         <section aria-labelledby="profiles-heading">
           <div className="section-head">
             <h2 id="profiles-heading">{t('settings.profiles')}</h2>
-            <button type="button" className="btn" onClick={() => setAdding((v) => !v)} aria-expanded={adding}>
-              + {t('settings.addProfile')}
+            <button type="button" className="btn small" onClick={() => setAdding((v) => !v)} aria-expanded={adding}>
+              <IconPlus size={14} /> {t('settings.addProfile')}
             </button>
           </div>
           {adding ? (
@@ -110,7 +118,7 @@ export function Settings() {
         </section>
         <section aria-labelledby="prefs-heading">
           <h2 id="prefs-heading">{t('settings.preferences')}</h2>
-          <div className="prefs">
+          <div className="prefs panel">
             <label className="field">
               <span>{t('settings.theme')}</span>
               <select className="input" value={settings?.prefs.theme ?? 'system'} onChange={(e) => {
@@ -139,7 +147,10 @@ export function Settings() {
               </select>
             </label>
           </div>
-          <p className="muted small">{t('settings.privacy')}</p>
+          <p className="privacy muted small">
+            <IconLock size={13} />
+            {t('settings.privacy')}
+          </p>
         </section>
       </main>
     </I18nContext.Provider>

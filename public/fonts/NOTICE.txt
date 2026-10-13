@@ -1,0 +1,8 @@
+Fonts bundled with the Dewee extension, the same families dewee.sh uses.
+Each is licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
+
+Be Vietnam Pro  Copyright 2021 The Be Vietnam Pro Project Authors (https://github.com/bettergui/BeVietnamPro)
+Newsreader      Copyright 2020 The Newsreader Project Authors (https://github.com/productiontype/Newsreader)
+JetBrains Mono  Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+
+The files are the Vietnamese, Latin Extended and Latin subsets served by Google Fonts.

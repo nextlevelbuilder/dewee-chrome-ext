@@ -5,6 +5,7 @@ import { looseCards } from '@/chat/chat-state';
 import { ActionCard } from '@/credentials/ActionCard';
 import type { RespondFn } from '@/credentials/respond-types';
 import { errorText, hasMessage, useI18n } from '@/shared/i18n';
+import { BrandMark } from '@/shared/icons';
 import { renderMarkdown } from '@/shared/markdown';
 import type { UiActionCard } from '@/protocol/ui-action';
 
@@ -55,6 +56,7 @@ function MessageItem({ message, cards, respond, deweeUrl, ...recovery }: { messa
         <ul className="tool-list" aria-label="tools">
           {message.tools.map((tool) => (
             <li key={tool.id} className={`tool tool-${tool.state}`}>
+              <span className="tool-dot" aria-hidden="true" />
               {t(tool.state === 'running' ? 'chat.tool.running' : tool.state === 'error' ? 'chat.tool.error' : 'chat.tool.done', { name: tool.name })}
               {tool.viaAgent ? <span className="muted"> · {t('chat.viaAgent', { agent: tool.viaAgent })}</span> : null}
             </li>
@@ -63,7 +65,15 @@ function MessageItem({ message, cards, respond, deweeUrl, ...recovery }: { messa
       ) : null}
       {message.thinking && message.streaming && !message.content ? <p className="muted small thinking">{t('chat.thinking')}…</p> : null}
       {message.role === 'assistant' ? (
-        message.content ? <Markdown text={message.content} /> : message.streaming ? <span className="typing" aria-label={t('app.loading')} /> : null
+        message.content ? (
+          <Markdown text={message.content} />
+        ) : message.streaming ? (
+          <span className="typing" role="img" aria-label={t('app.loading')}>
+            <span />
+            <span />
+            <span />
+          </span>
+        ) : null
       ) : (
         <p className="plain">{message.content}</p>
       )}
@@ -133,7 +143,10 @@ export function MessageList({
         </p>
       ) : null}
       {state.phase !== 'loading' && state.messages.length === 0 && loose.length === 0 && !state.loadError ? (
-        <p className="empty-state">{t('chat.empty', { agent: agentName })}</p>
+        <div className="empty-state">
+          <BrandMark size={56} />
+          <p className="empty-title">{t('chat.empty', { agent: agentName })}</p>
+        </div>
       ) : null}
       <ul className="message-list">
         {state.messages.slice(state.hiddenBefore).map((message) => (

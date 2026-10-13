@@ -2,7 +2,7 @@
 @import './theme.css';
 
 .muted {
-  color: var(--ink-soft);
+  color: var(--ink-3);
 }
 .small {
   font-size: 12px;
@@ -11,7 +11,7 @@
   display: block;
 }
 .mono {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono-stack);
 }
 .truncate {
   overflow: hidden;
@@ -28,85 +28,131 @@
   gap: 8px;
 }
 .pad {
-  padding: 12px;
+  padding: 14px;
 }
 .link {
   border: 0;
   padding: 0;
   background: none;
-  color: var(--indigo);
+  color: var(--accent-ink);
+  font-weight: 500;
   text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
 }
 .badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   margin-left: 6px;
-  padding: 0 6px;
+  padding: 0 7px;
   border-radius: 999px;
-  background: var(--paper-3);
-  border: 1px solid var(--hairline);
-  font: 600 10px/16px var(--font-mono);
-  letter-spacing: 0.06em;
+  background: var(--accent-soft);
+  font: 600 10px/18px var(--font-body-stack);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--ink-muted);
+  color: var(--accent-ink);
   vertical-align: middle;
 }
+.brand-mark {
+  display: block;
+  flex: none;
+}
 .btn.small {
-  min-height: 26px;
-  padding: 0 8px;
-  font-size: 12px;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12.5px;
 }
 .btn.icon {
   min-width: 32px;
+  min-height: 32px;
   padding: 0;
 }
+
+/* Native selects keep their keyboard and accessibility behaviour; only the chrome is restyled.
+   The chevron matches the inline icons; its mid grey reads on both themes. */
 select.input {
-  appearance: auto;
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23858d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: calc(100% - 9px) 50%;
+  background-size: 14px 14px;
+  background-repeat: no-repeat;
+  text-overflow: ellipsis;
+  cursor: pointer;
 }
 .input.compact {
-  min-height: 30px;
-  padding: 3px 6px;
+  min-height: 32px;
+  padding: 3px 8px;
+}
+select.input.compact {
+  padding-right: 26px;
 }
 
 .connect-form {
   display: grid;
-  gap: 12px;
+  gap: 14px;
+}
+.connect-form .btn-primary {
+  min-height: 36px;
 }
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-2);
+  background: var(--paper-3);
 }
 .segment {
-  min-height: 34px;
+  min-height: 30px;
   border: 0;
-  background: var(--paper-2);
+  border-radius: var(--radius-1);
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 500;
   cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+.segment:hover {
+  color: var(--ink);
 }
 .segment.active {
-  background: var(--electric);
-  color: var(--on-electric);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+.form-hint {
+  margin: -4px 0 0;
 }
 .checkbox {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: flex-start;
+  cursor: pointer;
 }
 .checkbox input {
   margin-top: 3px;
+  accent-color: var(--accent);
 }
 .hint-code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono-stack);
+  font-size: 11px;
+  line-height: 1.5;
   word-break: break-word;
 }
 .advanced summary {
+  width: fit-content;
   cursor: pointer;
-  color: var(--ink-soft);
+  color: var(--ink-3);
+}
+.advanced summary:hover {
+  color: var(--ink);
 }
 .advanced .input {
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .field-error {
   color: var(--danger);
