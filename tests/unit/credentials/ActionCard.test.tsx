@@ -41,6 +41,8 @@ describe('ActionCard', () => {
       ({
         ...fixture,
         kind: 'command_preview',
+        // Open regardless of today's date: the fixture's own expiry is a fixed moment.
+        expires_at: '2999-01-01T00:00:00Z',
         payload: { command: ['dewee', 'agents', 'list'], policy_outcome },
       }) as unknown as UiActionCard;
 
