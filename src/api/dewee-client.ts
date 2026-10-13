@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { mapRuntimeFrame, type ChatEvent, type RawSseFrame } from '@/protocol/chat-events';
-import { readSseFrames } from '@/protocol/sse-reader';
+import { readSseFrames, SseProtocolError } from '@/protocol/sse-reader';
 import { DeweeApiError, errorFromResponse } from './errors';
 import {
   abortResponse,
@@ -159,6 +159,11 @@ export class DeweeClient {
         if (event) yield event;
       }
     } catch (error) {
+      // An oversized line or event comes only from a body the server already answered, and it stays
+      // a protocol error even when the caller aborts while the body is being cancelled.
+      if (error instanceof SseProtocolError) {
+        throw new DeweeApiError(0, 'protocol_error', 'The reply broke the stream format', undefined, true, error);
+      }
       if (stalled) throw new DeweeApiError(0, 'stream_stalled', 'The stream stopped responding', undefined, responded);
       // Any other fault after the 200 (a decoder or mapping bug) still means the server took the
       // turn: mark it so callers reconcile instead of offering a resend. The original is the cause.

@@ -1,11 +1,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import type { DeweeClient } from '../../../src/api/dewee-client';
+import { DeweeClient } from '../../../src/api/dewee-client';
 import { DeweeApiError } from '../../../src/api/errors';
 import type { HistoryMessage } from '../../../src/api/schemas';
 import type { ChatMessage } from '../../../src/chat/chat-state';
 import { addPendingContinuation, loadPendingContinuations, removePendingContinuation } from '../../../src/chat/pending-continuations';
 import { useChat, type ChatContext } from '../../../src/chat/use-chat';
 import type { ChatEvent } from '../../../src/protocol/chat-events';
+import { MAX_SSE_PENDING, SseProtocolError } from '../../../src/protocol/sse-reader';
 import { parseUiAction } from '../../../src/protocol/ui-action';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -990,6 +991,56 @@ describe('useChat delivery proof', () => {
     expect(logged).toHaveBeenCalledWith('Chat stream failed', bug);
   });
 
+  it('treats an oversized stream (protocol_error) as uncertain: no "Send again" and no automatic resend', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // eslint-disable-next-line require-yield -- the body fails before the first frame
+    const { client, methods } = fakeClient(async function* () {
+      throw new DeweeApiError(0, 'protocol_error', 'The reply broke the stream format', undefined, true, new SseProtocolError('too large'));
+    });
+    const { result } = renderHook(() => useChat(context(client), hooks()));
+
+    void result.current.send('Hello');
+
+    await waitFor(() => expect(lastMessage(result.current.state.messages)?.error).toBeDefined());
+    expect(lastMessage(result.current.state.messages)).toMatchObject({ error: { code: 'delivery_unconfirmed' }, recover: 'sessions' });
+    expect(result.current.state.messages.some((m) => m.retryText)).toBe(false);
+    expect(methods.streamChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows protocol_error in a known session and reconciles, with no "Send again"', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let failed = false;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { result, methods } = await openSession(
+      async function* () {
+        yield started();
+        yield { type: 'message.delta', delta: 'partial' } as ChatEvent;
+        failed = true;
+        throw new DeweeApiError(0, 'protocol_error', 'The reply broke the stream format', undefined, true, new SseProtocolError('too large'));
+      },
+      {
+        history: async () => {
+          if (failed) await gate;
+          return history(SERVER_HISTORY);
+        },
+      },
+    );
+
+    void result.current.send('Hello again');
+
+    // While the reconcile reads the history, the failed turn shows the protocol error.
+    await waitFor(() => expect(lastMessage(result.current.state.messages)?.error?.code).toBe('protocol_error'));
+    expect(result.current.state.phase).toBe('reconciling');
+    expect(result.current.state.messages.some((m) => m.retryText || m.retryContinuation)).toBe(false);
+
+    release();
+    await waitFor(() => expect(loads(methods.history)).toBe(2));
+    await waitFor(() => expect(result.current.state.phase).toBe('idle'));
+    expect(result.current.state.messages.some((m) => m.retryText || m.retryContinuation)).toBe(false);
+    expect(methods.streamChat).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a manual retry for a continuation lost before delivery in a known session, and resends it once', async () => {
     let call = 0;
     const { result, methods } = await openSession(async function* () {
@@ -1331,6 +1382,74 @@ describe('useChat continuation delivery proof', () => {
     expect(result.current.state.messages.filter((m) => m.retryContinuation)).toHaveLength(1);
     await waitFor(async () => expect(await storedContinuations()).toEqual([HELD]));
     await idle();
+    expect(methods.streamChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a continuation whose stream broke the format after the response (protocol_error): held, with "Continue"', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { result, methods } = await openSession(async function* () {
+      yield started();
+      throw new DeweeApiError(0, 'protocol_error', 'The reply broke the stream format', undefined, true, new SseProtocolError('too large'));
+    });
+
+    void result.current.continueWith(CONTINUATION);
+
+    await waitFor(() => expect(lastMessage(result.current.state.messages)?.retryContinuation).toEqual(CONTINUATION));
+    expect(lastMessage(result.current.state.messages)?.error?.code).toBe('protocol_error');
+    expect(result.current.state.messages.filter((m) => m.retryContinuation)).toHaveLength(1);
+    await waitFor(async () => expect(await storedContinuations()).toEqual([HELD]));
+    await idle();
+    expect(methods.streamChat).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The real client over one body chunk holding chat.started, message.completed and then a line
+   * past the parser cap, so the turn ends normally before the stream fails with protocol_error.
+   */
+  const completedThenOverflow = (signal?: AbortSignal) => {
+    const frame = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const text =
+      frame('chat.started', { run_id: 'r1', session_key: SESSION, agent_key: 'super-agent' }) +
+      frame('message.completed', { message: { role: 'assistant', content: 'Done', created_at: '2026-10-12T09:00:00Z' } }) +
+      `data: ${'x'.repeat(MAX_SSE_PENDING)}\n`;
+    const fetch = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(text));
+          },
+        }),
+        { status: 200 },
+      );
+    const real = new DeweeClient({ baseUrl: 'https://gw.example.test/v1/extension', auth: { authorization: async () => 'Bearer test-api-key' }, fetch, streamIdleMs: 1000 });
+    return real.streamChat(WORKSPACE, { agent_key: 'super-agent', message: 'Hi', session_key: SESSION }, signal);
+  };
+
+  it('keeps a reply completed in the chunk that overflows: no error bubble and no "Send again"', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { result, methods } = await openSession(completedThenOverflow);
+
+    void result.current.send('Hello again');
+
+    await waitFor(() => expect(lastMessage(result.current.state.messages)?.content).toBe('Done'));
+    await idle();
+    expect(result.current.state.phase).toBe('idle');
+    expect(result.current.state.messages.some((m) => m.error || m.retryText || m.retryContinuation || m.recover)).toBe(false);
+    expect(methods.streamChat).toHaveBeenCalledTimes(1);
+    expect(logged).not.toHaveBeenCalledWith('Chat stream failed', expect.anything());
+  });
+
+  it('acknowledges a continuation whose message.completed came in the chunk that overflows', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { result, methods } = await openSession(completedThenOverflow);
+
+    void result.current.continueWith(CONTINUATION);
+
+    await waitFor(() => expect(lastMessage(result.current.state.messages)?.content).toBe('Done'));
+    await waitFor(async () => expect(await storedContinuations()).toEqual([]));
+    await idle();
+    expect(result.current.state.phase).toBe('idle');
+    expect(result.current.state.messages.some((m) => m.error || m.retryContinuation)).toBe(false);
     expect(methods.streamChat).toHaveBeenCalledTimes(1);
   });
 

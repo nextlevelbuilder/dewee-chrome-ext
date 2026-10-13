@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { DeweeClient, type AuthAdapter } from '../../../src/api/dewee-client';
 import { DeweeApiError } from '../../../src/api/errors';
 import type { ChatEvent } from '../../../src/protocol/chat-events';
+import { MAX_SSE_PENDING, SseProtocolError } from '../../../src/protocol/sse-reader';
 
 const BASE = 'https://gw.example.test/v1/extension';
 const card = JSON.parse(
@@ -354,6 +355,68 @@ describe('streamChat', () => {
     const error = await collect(client(fetch, { streamIdleMs: 1000 }).streamChat('ws_1', { agent_key: 'a', message: 'Hi' })).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(DeweeApiError);
     expect(error).toMatchObject({ status: 0, code: 'runtime_request_failed', afterResponse: true, cause: bug });
+  });
+
+  it('stops an endless stream line as protocol_error after the response, so the turn is reconciled', async () => {
+    const encoder = new TextEncoder();
+    const filler = encoder.encode('x'.repeat(64 * 1024));
+    let first = true;
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (first) {
+            first = false;
+            controller.enqueue(encoder.encode(sse('chat.started', { run_id: 'r1', session_key: 's1', agent_key: 'a' }) + 'data: '));
+          } else controller.enqueue(filler);
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    const received: ChatEvent[] = [];
+    const run = async () => {
+      for await (const event of client(fetch, { streamIdleMs: 1000 }).streamChat('ws_1', { agent_key: 'a', message: 'Hi' })) received.push(event);
+    };
+    const error = await run().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DeweeApiError);
+    expect(error).toMatchObject({ status: 0, code: 'protocol_error', afterResponse: true });
+    expect((error as DeweeApiError).cause).toBeInstanceOf(SseProtocolError);
+    expect(received.map((e) => e.type)).toEqual(['chat.started']);
+  });
+
+  /** One chunk holding a complete chat.started frame followed by a line past the default cap. */
+  function overflowAfterStarted(onCancel?: () => void): ReadableStream<Uint8Array> {
+    const text = sse('chat.started', { run_id: 'r1', session_key: 's1', agent_key: 'a' }) + `data: ${'x'.repeat(MAX_SSE_PENDING)}\n`;
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+      },
+      cancel() {
+        onCancel?.();
+      },
+    });
+  }
+
+  it('delivers chat.started from the chunk that overflows, so the session key is learned', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(overflowAfterStarted(), { status: 200 }));
+    const received: ChatEvent[] = [];
+    const run = async () => {
+      for await (const event of client(fetch, { streamIdleMs: 1000 }).streamChat('ws_1', { agent_key: 'a', message: 'Hi' })) received.push(event);
+    };
+    const error = await run().catch((e: unknown) => e);
+    expect(received).toEqual([{ type: 'chat.started', runId: 'r1', sessionKey: 's1', agentKey: 'a' }]);
+    expect(error).toMatchObject({ status: 0, code: 'protocol_error', afterResponse: true });
+  });
+
+  it('keeps protocol_error after the response when the caller aborts while the body is cancelled', async () => {
+    const stop = new AbortController();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(overflowAfterStarted(() => stop.abort()), { status: 200 }));
+    const run = async () => {
+      for await (const event of client(fetch, { streamIdleMs: 1000 }).streamChat('ws_1', { agent_key: 'a', message: 'Hi' }, stop.signal)) void event;
+    };
+    const error = await run().catch((e: unknown) => e);
+    expect(stop.signal.aborted).toBe(true);
+    expect(error).toBeInstanceOf(DeweeApiError);
+    expect(error).toMatchObject({ status: 0, code: 'protocol_error', afterResponse: true });
   });
 
   it('surfaces an auth adapter bug unchanged', async () => {

@@ -1,8 +1,8 @@
 /**
  * One error type for every transport failure. `code` is the server's error code (see
  * docs/api-contract.md) or a client code: `network_error` (rejected fetch), `timeout`,
- * `invalid_response`, `stream_stalled`, `connection_lost`, `runtime_request_failed` (a client
- * fault after the stream answered), `history_changed` (the history kept shrinking while it was
+ * `invalid_response`, `stream_stalled`, `connection_lost`, `protocol_error` (a stream line or
+ * event over the size cap), `runtime_request_failed` (a client fault after the stream answered), `history_changed` (the history kept shrinking while it was
  * read), `not_connected`, or a background code such as
  * `background_unavailable`. Messages never contain request bodies or credentials.
  */
