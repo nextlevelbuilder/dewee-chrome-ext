@@ -6,10 +6,28 @@ import { IconArrowUp, IconStop } from '@/shared/icons';
 /** Tallest the box grows before it scrolls, in pixels. */
 const MAX_HEIGHT = 200;
 
-export const Composer = forwardRef<HTMLTextAreaElement, { agentName: string; busy: boolean; disabled?: boolean; /** False when the send was refused locally and nothing left; the text is then kept. */ onSend(text: string): boolean | void; onStop(): void }>(
-  function Composer({ agentName, busy, disabled, onSend, onStop }, ref) {
+export const Composer = forwardRef<
+  HTMLTextAreaElement,
+  {
+    agentName: string;
+    busy: boolean;
+    disabled?: boolean;
+    /** Text to put in the box once per id (an "Ask Dewee" quote); never sent without the person pressing Send. */
+    draft?: { id: string; text: string } | null;
+    /** False when the send was refused locally and nothing left; the text is then kept. */
+    onSend(text: string): boolean | void;
+    onStop(): void;
+  }
+>(
+  function Composer({ agentName, busy, disabled, draft, onSend, onStop }, ref) {
     const { t } = useI18n();
     const [text, setText] = useState('');
+    // A new draft goes above whatever is already typed, so nothing the person wrote is lost.
+    const [draftId, setDraftId] = useState<string>();
+    if (draft && draft.id !== draftId) {
+      setDraftId(draft.id);
+      setText((current) => (current.trim() ? `${draft.text}${current}` : draft.text));
+    }
     const inputRef = useRef<HTMLTextAreaElement>(null);
     useImperativeHandle(ref, () => inputRef.current as HTMLTextAreaElement);
 
@@ -20,6 +38,15 @@ export const Composer = forwardRef<HTMLTextAreaElement, { agentName: string; bus
       el.style.height = 'auto';
       el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
     }, [text]);
+
+    // Put the caret after the quote so the person can type the question straight away.
+    useLayoutEffect(() => {
+      const el = inputRef.current;
+      if (!draftId || !el) return;
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.scrollTop = el.scrollHeight;
+    }, [draftId]);
 
     // Send and Stop are different buttons, and the box is disabled while a conversation loads; both
     // drop focus to the page. Put it back in the box once it can take focus again.

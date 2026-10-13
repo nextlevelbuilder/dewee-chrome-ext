@@ -48,8 +48,10 @@ const settingsSchema = z.object({
       showReasoning: z.boolean().default(false),
       /** Show each tool call's input, output and error. */
       showToolDetails: z.boolean().default(false),
+      /** Show an "Ask Dewee" button on selected page text (needs site access, requested when turned on). */
+      askOnSelection: z.boolean().default(false),
     })
-    .default({ theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false }),
+    .default({ theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false, askOnSelection: false }),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 

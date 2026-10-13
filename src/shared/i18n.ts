@@ -192,13 +192,16 @@ const en = {
   'settings.theme.light': 'Light',
   'settings.theme.dark': 'Dark',
   'settings.display': 'Chat display',
+  'settings.askOnSelection': 'Ask Dewee about selected text',
+  'settings.askOnSelection.hint': 'Shows an Ask Dewee button when you select text on a web page. Clicking it opens the side panel with the quote, page title and address in the message box; nothing is sent until you press Send. Needs access to websites; applies to pages opened after turning it on. Turning it off removes the button; to remove site access too, use Chrome’s extension settings.',
+  'settings.askOnSelection.denied': 'Chrome did not grant website access, so the button stays off.',
   'settings.showReasoning': 'Show reasoning',
   'settings.showReasoning.hint': 'Show the agent’s thinking under each reply, collapsed.',
   'settings.showToolDetails': 'Show tool call details',
   'settings.showToolDetails.hint': 'Show each tool’s input, output and error. Common key, token and password formats are hidden, but not every secret can be recognised.',
   'settings.language': 'Language',
   'settings.language.auto': 'Browser default',
-  'settings.privacy': 'The extension never reads the pages you visit. Credentials are kept only in this browser and sent only to the connection they belong to.',
+  'settings.privacy': 'The extension never reads the pages you visit, except text you select and send with Ask Dewee when you turn that on. Credentials are kept only in this browser and sent only to the connection they belong to.',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -390,13 +393,16 @@ const vi: Record<MessageKey, string> = {
   'settings.theme.light': 'Sáng',
   'settings.theme.dark': 'Tối',
   'settings.display': 'Hiển thị hội thoại',
+  'settings.askOnSelection': 'Hỏi Dewee về đoạn văn bản đã chọn',
+  'settings.askOnSelection.hint': 'Hiện nút Hỏi Dewee khi bạn bôi đen văn bản trên trang web. Bấm nút sẽ mở side panel, đưa trích dẫn, tiêu đề và địa chỉ trang vào ô nhập; không gửi gì cho tới khi bạn bấm Gửi. Cần quyền truy cập website; áp dụng cho các trang mở sau khi bật. Tắt sẽ gỡ nút; muốn thu hồi cả quyền truy cập website, dùng phần cài đặt extension của Chrome.',
+  'settings.askOnSelection.denied': 'Chrome chưa cấp quyền truy cập website nên nút vẫn tắt.',
   'settings.showReasoning': 'Hiện phần suy luận',
   'settings.showReasoning.hint': 'Hiện suy nghĩ của agent bên dưới mỗi câu trả lời, ở dạng thu gọn.',
   'settings.showToolDetails': 'Hiện chi tiết tool call',
   'settings.showToolDetails.hint': 'Hiện đầu vào, kết quả và lỗi của từng tool. Các dạng key, token và mật khẩu phổ biến được ẩn, nhưng không phải bí mật nào cũng nhận ra được.',
   'settings.language': 'Ngôn ngữ',
   'settings.language.auto': 'Theo trình duyệt',
-  'settings.privacy': 'Extension không bao giờ đọc các trang bạn truy cập. Thông tin xác thực chỉ nằm trong trình duyệt này và chỉ được gửi tới đúng kết nối của nó.',
+  'settings.privacy': 'Extension không bao giờ đọc các trang bạn truy cập, trừ đoạn văn bản bạn chọn và bấm Hỏi Dewee khi bạn bật tính năng đó. Thông tin xác thực chỉ nằm trong trình duyệt này và chỉ được gửi tới đúng kết nối của nó.',
 };
 
 export type Locale = 'en' | 'vi';

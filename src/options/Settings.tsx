@@ -3,6 +3,8 @@
  * preferences. Workspace settings stay in Dewee; these are only this browser's preferences.
  */
 import { useState } from 'react';
+import { browser } from 'wxt/browser';
+import { ASK_ORIGINS } from '@/protocol/ask-selection';
 import { ConnectForm } from '@/shared/ConnectForm';
 import { removeProfile, signOutProfile, verifyProfile } from '@/shared/connect';
 import { errorText, I18nContext, useI18n } from '@/shared/i18n';
@@ -109,6 +111,48 @@ function PrefToggle({ pref, label, hint, settings, update }: { pref: BooleanPref
   );
 }
 
+/**
+ * "Ask Dewee" on selected text. Turning it on asks Chrome for site access first (in the click, which
+ * Chrome requires); the service worker then registers the page script. Turning it off removes the script.
+ */
+function AskToggle({ settings, update }: { settings: StoredSettings | null; update: SettingsState['update'] }) {
+  const { t } = useI18n();
+  const [denied, setDenied] = useState(false);
+  return (
+    <label className="checkbox">
+      <input
+        type="checkbox"
+        checked={settings?.prefs.askOnSelection ?? false}
+        disabled={!settings}
+        onChange={(e) => {
+          const on = e.target.checked;
+          setDenied(false);
+          if (!on) {
+            void update((s) => ({ ...s, prefs: { ...s.prefs, askOnSelection: false } }));
+            return;
+          }
+          void browser.permissions.request({ origins: ASK_ORIGINS }).then(
+            (granted) => {
+              if (granted) void update((s) => ({ ...s, prefs: { ...s.prefs, askOnSelection: true } }));
+              else setDenied(true);
+            },
+            () => setDenied(true),
+          );
+        }}
+      />
+      <span>
+        <span className="block">{t('settings.askOnSelection')}</span>
+        <span className="muted small block">{t('settings.askOnSelection.hint')}</span>
+        {denied ? (
+          <span className="small block text-danger" role="alert">
+            {t('settings.askOnSelection.denied')}
+          </span>
+        ) : null}
+      </span>
+    </label>
+  );
+}
+
 export function Settings() {
   const state = useSettings();
   const { settings, connected, update, t, locale } = state;
@@ -176,6 +220,7 @@ export function Settings() {
           <div className="panel stack">
             <PrefToggle pref="showReasoning" label={t('settings.showReasoning')} hint={t('settings.showReasoning.hint')} settings={settings} update={update} />
             <PrefToggle pref="showToolDetails" label={t('settings.showToolDetails')} hint={t('settings.showToolDetails.hint')} settings={settings} update={update} />
+            <AskToggle settings={settings} update={update} />
           </div>
           <p className="privacy muted small">
             <IconLock size={13} />

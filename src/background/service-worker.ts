@@ -5,6 +5,8 @@
 import { browser } from 'wxt/browser';
 import { isApiError } from '@/api/errors';
 import { requestSchema, type BackgroundResponse } from '@/protocol/messages';
+import { SETTINGS_KEY } from '@/shared/settings';
+import { handleAskSelection, isFromWebPage, syncAskScript } from './ask-selection';
 import { BADGE_ALARM, refreshPendingBadge } from './pending-badge';
 import { authorizationFor, renewFor, signIn, signOut } from './token-manager';
 
@@ -39,18 +41,40 @@ async function handle(message: unknown, senderId: string | undefined): Promise<B
 }
 
 export function startServiceWorker(): void {
-  // Open the side panel when the toolbar icon is clicked (a user gesture); never inject into pages.
+  // Open the side panel when the toolbar icon is clicked (a user gesture). Nothing runs in web pages unless
+  // the person turns on "Ask Dewee" for selected text and grants site access.
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  // Remembered credentials live in `storage.local`; keep it out of reach of the opt-in page script.
+  void chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' }).catch(() => undefined);
 
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // A web page's content script may only send `ask.selection`; it never reaches the auth handlers.
+    if (isFromWebPage(sender)) {
+      handleAskSelection(message, sender);
+      return false;
+    }
     void handle(message, sender.id).then(sendResponse);
     return true;
   });
+
+  // The page script follows the preference and the granted site access.
+  const syncAsk = () => void syncAskScript().catch(() => undefined);
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && SETTINGS_KEY in changes) syncAsk();
+  });
+  browser.permissions.onAdded.addListener(syncAsk);
+  browser.permissions.onRemoved.addListener(syncAsk);
 
   void browser.alarms.create(BADGE_ALARM, { periodInMinutes: 1 });
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === BADGE_ALARM) void refreshPendingBadge();
   });
-  browser.runtime.onStartup.addListener(() => void refreshPendingBadge());
-  browser.runtime.onInstalled.addListener(() => void refreshPendingBadge());
+  browser.runtime.onStartup.addListener(() => {
+    void refreshPendingBadge();
+    syncAsk();
+  });
+  browser.runtime.onInstalled.addListener(() => {
+    void refreshPendingBadge();
+    syncAsk();
+  });
 }

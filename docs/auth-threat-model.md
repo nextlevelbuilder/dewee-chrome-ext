@@ -27,11 +27,14 @@ The Dewee gateway master token is never accepted as an extension credential, and
 | Wrong workspace or tenant | Every call names the workspace; Dewee enforces membership and returns 404 for non-members. The client never falls back to another workspace or profile. |
 | Expired or revoked credential | 401 → one renew (Cloud) → on failure the credential is cleared and the panel asks to reconnect that same profile. |
 | Sign-out leaves a live token | Sign-out calls revoke (best effort) and clears both storage areas. Removing a profile also drops its host permission when no other profile uses the origin. |
-| Messages from other extensions or pages | The background accepts messages only from its own extension id and validates them with Zod. It returns the `Authorization` value only to those pages, which hold it in memory for the request. A network failure while renewing keeps the credential; only a 401 signs the profile out. |
+| Messages from other extensions or pages | The background accepts messages only from its own extension id and validates them with Zod. It returns the `Authorization` value only to extension pages, which hold it in memory for the request. A network failure while renewing keeps the credential; only a 401 signs the profile out. |
+| A web page abusing the "Ask Dewee" script | The script runs only when the person turns the feature on and grants site access. A message from it (a tab sender, top frame, non-extension URL) goes only to the selection handler: one schema-checked `ask.selection` that opens the panel and leaves a quoted draft in `storage.session`, never sent automatically. It never reaches the auth handlers or a credential. The page sees only a closed shadow-root button. |
+| Page secrets carried into a draft | Selections inside inputs, text areas and editable regions are ignored. The address drops its fragment, user info and query values whose names look like credentials. The draft is plain text the person reads and edits before sending. |
 | Remote code | Strict CSP (`script-src 'self'`), no `eval`, no remote scripts. |
 
 ## Residual risks
 
 - Malware with access to the Chrome profile can read `storage.session` while the browser runs. Tokens are short-lived and revocable.
 - "Remember" keeps the credential on disk in the Chrome profile; the person accepts this when they tick it.
+- "Ask Dewee" needs read access to every https page while it is on. Turning it off removes the script, but Chrome keeps the site access until the person removes it in the extension settings, because removing it could also drop gateway origins covered by the same grant. `storage.local` is limited to extension pages where Chrome supports it.
 - Self-hosted operators must allowlist the extension origin (`GOCLAW_ALLOWED_ORIGINS`) and keep API keys scoped.
