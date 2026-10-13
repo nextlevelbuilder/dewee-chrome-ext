@@ -31,7 +31,9 @@ function inEditable(node: Node | null): boolean {
 
 /** Chrome reports text selected inside an input or text area with the field's parent as anchor, so check focus too. */
 function focusInField(doc: Document): boolean {
-  const active = doc.activeElement;
+  // Follow focus into web components, whose host element is all the document reports.
+  let active = doc.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
   return Boolean(active && (active.matches(FIELD) || (active as HTMLElement).isContentEditable));
 }
 
@@ -45,7 +47,7 @@ export function selectedText(doc: Document): { text: string; rect: DOMRect } | n
 }
 
 /**
- * Mounts the hidden button and its listeners; dispose removes both. yPerson decides whether a click
+ * Mounts the hidden button and its listeners; dispose removes both. `byPerson` decides whether a click
  * came from the person rather than page script (tests replace it, since they cannot make trusted events).
  */
 export function mountAskButton(

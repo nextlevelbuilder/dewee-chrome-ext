@@ -36,8 +36,9 @@ export function syncAskScript(): Promise<boolean> {
     const [settings, allowed, locked] = await Promise.all([loadSettings(), browser.permissions.contains({ origins: ASK_ORIGINS }), lockLocalStorage()]);
     const wanted = settings.prefs.askOnSelection && allowed && locked;
     const registered = (await chrome.scripting.getRegisteredContentScripts({ ids: [ASK_SCRIPT_ID] })).length > 0;
+    // Not kept across browser restarts: restored tabs must not run the script before the worker locks storage.local again.
     if (wanted && !registered) {
-      await chrome.scripting.registerContentScripts([{ id: ASK_SCRIPT_ID, js: [ASK_SCRIPT_FILE], matches: ASK_ORIGINS, runAt: 'document_idle', allFrames: false, persistAcrossSessions: true }]);
+      await chrome.scripting.registerContentScripts([{ id: ASK_SCRIPT_ID, js: [ASK_SCRIPT_FILE], matches: ASK_ORIGINS, runAt: 'document_idle', allFrames: false, persistAcrossSessions: false }]);
     } else if (!wanted && registered) {
       await chrome.scripting.unregisterContentScripts({ ids: [ASK_SCRIPT_ID] });
     }

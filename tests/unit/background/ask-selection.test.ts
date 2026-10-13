@@ -101,7 +101,7 @@ describe('syncAskScript', () => {
 
     contains.mockResolvedValue(true as never);
     expect(await syncAskScript()).toBe(true);
-    expect(chromeStub.scripting.registerContentScripts).toHaveBeenCalledWith([expect.objectContaining({ id: 'ask-dewee', matches: ['https://*/*'], allFrames: false })]);
+    expect(chromeStub.scripting.registerContentScripts).toHaveBeenCalledWith([expect.objectContaining({ id: 'ask-dewee', matches: ['https://*/*'], allFrames: false, persistAcrossSessions: false })]);
 
     await setAsk(false);
     expect(await syncAskScript()).toBe(false);

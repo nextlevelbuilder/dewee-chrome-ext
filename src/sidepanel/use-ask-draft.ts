@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { ASK_DRAFT_KEY, ASK_DRAFT_TTL_MS, askDraftSchema, type AskDraft } from '@/protocol/ask-selection';
 
-/** The waiting draft, and 	aken(id) to drop it once the composer holds it. */
+/** The waiting draft, and `taken(id)` to drop it once the composer holds it. */
 export function useAskDraft(): { draft: AskDraft | null; taken(id: string): void } {
   const [draft, setDraft] = useState<AskDraft | null>(null);
 
