@@ -265,7 +265,6 @@
   flex: 1 1 auto;
   overflow: auto;
   min-height: 0;
-  scroll-behavior: smooth;
 }
 .messages {
   display: flex;
@@ -745,8 +744,5 @@
   .typing > span,
   .tool-running .tool-dot {
     animation: none;
-  }
-  .chat-main {
-    scroll-behavior: auto;
   }
 }

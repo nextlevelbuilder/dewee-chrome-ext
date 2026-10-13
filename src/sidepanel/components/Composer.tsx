@@ -1,5 +1,5 @@
 /** Message composer. Enter sends, Shift+Enter adds a line, Escape stops a running reply. */
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '@/shared/i18n';
 import { IconArrowUp, IconStop } from '@/shared/icons';
 
@@ -20,6 +20,14 @@ export const Composer = forwardRef<HTMLTextAreaElement, { agentName: string; bus
       el.style.height = 'auto';
       el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
     }, [text]);
+
+    // Send and Stop are different buttons, so swapping them drops focus to the page; keep it in the box.
+    const wasBusy = useRef(busy);
+    useEffect(() => {
+      if (wasBusy.current === busy) return;
+      wasBusy.current = busy;
+      if (document.activeElement === document.body) inputRef.current?.focus({ preventScroll: true });
+    }, [busy]);
 
     function submit() {
       const value = text.trim();

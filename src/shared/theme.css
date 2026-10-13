@@ -11,7 +11,7 @@
   --hairline-strong: #d9cfc2;
   --ink: #101828;
   --ink-muted: #3a4658;
-  --ink-soft: #747c8b;
+  --ink-soft: #5f6776;
   --indigo: #2a36e8;
   --electric: #3d5afe;
   --electric-hover: #2f4ae8;
@@ -20,7 +20,7 @@
   --accent-ring: rgba(61, 90, 254, 0.22);
   --bubble: #f1ece4;
   --orchid: #b66bff;
-  --verdigris: #0c8b78;
+  --verdigris: #08705f;
   --verdigris-soft: #e3f4f0;
   --amber: #a8640f;
   --amber-soft: #fbf1e2;
@@ -52,7 +52,7 @@
   --indigo: #a9b6ff;
   --electric: #6b86ff;
   --electric-hover: #8098ff;
-  --on-electric: #ffffff;
+  --on-electric: #0a0f1c;
   --accent-soft: rgba(107, 134, 255, 0.14);
   --accent-ring: rgba(107, 134, 255, 0.35);
   --bubble: #1f2738;
@@ -83,7 +83,7 @@
     --indigo: #a9b6ff;
     --electric: #6b86ff;
     --electric-hover: #8098ff;
-    --on-electric: #ffffff;
+    --on-electric: #0a0f1c;
     --accent-soft: rgba(107, 134, 255, 0.14);
     --accent-ring: rgba(107, 134, 255, 0.35);
     --bubble: #1f2738;
@@ -290,6 +290,9 @@ textarea {
   position: absolute;
   width: 1px;
   height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;

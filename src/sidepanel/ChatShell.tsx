@@ -188,7 +188,10 @@ export function ChatShell({
           ) : (
             <span className="profile-name truncate">{profile.name}</span>
           )}
-          <span className={online ? 'status-dot online' : 'status-dot offline'} role="status" aria-label={online ? t('app.online') : t('app.offline')} title={online ? t('app.online') : t('app.offline')} />
+          <span className={online ? 'status-dot online' : 'status-dot offline'} role="status" aria-label={online ? t('app.online') : t('app.offline')} title={online ? t('app.online') : t('app.offline')}>
+            {/* Live regions announce content changes, not label changes. */}
+            <span className="sr-only">{online ? t('app.online') : t('app.offline')}</span>
+          </span>
           <span className="grow" />
           {agentKey ? (
             <>
