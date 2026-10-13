@@ -23,6 +23,10 @@ describe('ask.selection message', () => {
 });
 
 describe('shareableUrl', () => {
+  it('drops short and signed-URL credential parameters', () => {
+    expect(shareableUrl('https://s3.example.com/f?X-Amz-Credential=a&X-Amz-Signature=b&t=c&sid=d&credential=e&lang=vi')).toBe('https://s3.example.com/f?lang=vi');
+  });
+
   it('drops the fragment, credentials in the address and secret-looking query values', () => {
     expect(shareableUrl('https://ann:pw@example.com/p?q=dewee&token=abc&page=2&code=xyz#section')).toBe('https://example.com/p?q=dewee&page=2');
   });

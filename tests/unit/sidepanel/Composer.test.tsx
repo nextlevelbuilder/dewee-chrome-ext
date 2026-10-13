@@ -75,4 +75,10 @@ describe('Composer draft', () => {
     rerender(<Composer {...base} draft={{ id: 'd2', text: '> second\n\n' }} />);
     expect(input.value).toBe('> second\n\n> quote\n\nmy note');
   });
+
+  it('reports the draft as taken, so a remounted composer does not add it again', () => {
+    const onDraftTaken = vi.fn();
+    render(<Composer {...base} draft={{ id: 'd9', text: '> quote\n\n' }} onDraftTaken={onDraftTaken} />);
+    expect(onDraftTaken).toHaveBeenCalledWith('d9');
+  });
 });

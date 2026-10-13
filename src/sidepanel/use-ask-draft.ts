@@ -3,11 +3,12 @@
  * when the panel opens, and any that arrive while it is open. Each draft is used once, and a stale
  * one is dropped.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { ASK_DRAFT_KEY, ASK_DRAFT_TTL_MS, askDraftSchema, type AskDraft } from '@/protocol/ask-selection';
 
-export function useAskDraft(): AskDraft | null {
+/** The waiting draft, and 	aken(id) to drop it once the composer holds it. */
+export function useAskDraft(): { draft: AskDraft | null; taken(id: string): void } {
   const [draft, setDraft] = useState<AskDraft | null>(null);
 
   useEffect(() => {
@@ -34,5 +35,6 @@ export function useAskDraft(): AskDraft | null {
     };
   }, []);
 
-  return draft;
+  const taken = useCallback((id: string) => setDraft((current) => (current?.id === id ? null : current)), []);
+  return { draft, taken };
 }

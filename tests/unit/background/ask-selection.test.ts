@@ -1,10 +1,12 @@
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { handleAskSelection, isFromWebPage, syncAskScript } from '../../../src/background/ask-selection';
+import { handleAskSelection, isFromExtensionPage, isFromWebPage, syncAskScript } from '../../../src/background/ask-selection';
 import { ASK_DRAFT_KEY } from '../../../src/protocol/ask-selection';
 import { saveSettings, defaultSettings } from '../../../src/shared/settings';
 
 const registered = new Set<string>();
+const setAccessLevel = vi.fn(async () => {});
 const chromeStub = {
+  storage: { local: { setAccessLevel } },
   sidePanel: { open: vi.fn(async () => {}) },
   scripting: {
     getRegisteredContentScripts: vi.fn(async ({ ids }: { ids: string[] }) => ids.filter((id) => registered.has(id)).map((id) => ({ id }))),
@@ -36,6 +38,18 @@ describe('isFromWebPage', () => {
     expect(isFromWebPage(pageSender({ frameId: 2 }))).toBe(false);
     expect(isFromWebPage(pageSender({ tab: undefined }))).toBe(false);
     expect(isFromWebPage(pageSender({ url: fakeBrowser.runtime.getURL('/options.html') }))).toBe(false);
+    // Chrome's frame type wins over the id, which stays non-zero for an activated prerendered page.
+    expect(isFromWebPage(pageSender({ frameId: 5, frameType: 'outermost_frame' } as Partial<chrome.runtime.MessageSender>))).toBe(true);
+    expect(isFromWebPage(pageSender({ frameId: 0, frameType: 'sub_frame' } as Partial<chrome.runtime.MessageSender>))).toBe(false);
+  });
+});
+
+describe('isFromExtensionPage', () => {
+  it('accepts only this extension’s own pages, never a content script in a web page or frame', () => {
+    expect(isFromExtensionPage({ id: fakeBrowser.runtime.id, url: fakeBrowser.runtime.getURL('/sidepanel.html') })).toBe(true);
+    expect(isFromExtensionPage(pageSender())).toBe(false);
+    expect(isFromExtensionPage(pageSender({ frameId: 3, url: 'https://ads.example.net/frame' }))).toBe(false);
+    expect(isFromExtensionPage({ id: 'other-extension', url: fakeBrowser.runtime.getURL('/sidepanel.html') })).toBe(false);
   });
 });
 
@@ -67,6 +81,17 @@ describe('handleAskSelection', () => {
 });
 
 describe('syncAskScript', () => {
+  // Runs first: once storage.local is locked, the module remembers it.
+  it('keeps the page script off while storage.local cannot be limited to extension pages', async () => {
+    vi.spyOn(fakeBrowser.permissions, 'contains').mockResolvedValue(true as never);
+    await setAsk(true);
+    setAccessLevel.mockRejectedValueOnce(new Error('unsupported'));
+    expect(await syncAskScript()).toBe(false);
+    expect(registered.size).toBe(0);
+    expect(await syncAskScript()).toBe(true);
+    expect(setAccessLevel).toHaveBeenCalledWith({ accessLevel: 'TRUSTED_CONTEXTS' });
+  });
+
   it('registers the page script only when the preference is on and site access is granted', async () => {
     const contains = vi.spyOn(fakeBrowser.permissions, 'contains');
     await setAsk(true);
@@ -81,5 +106,15 @@ describe('syncAskScript', () => {
     await setAsk(false);
     expect(await syncAskScript()).toBe(false);
     expect(registered.size).toBe(0);
+  });
+});
+
+describe('a page script left over after the feature is turned off', () => {
+  it('opens no panel once the worker knows the script is off', async () => {
+    vi.spyOn(fakeBrowser.permissions, 'contains').mockResolvedValue(true as never);
+    await setAsk(false);
+    expect(await syncAskScript()).toBe(false);
+    expect(handleAskSelection(message, pageSender())).toBe(false);
+    expect(chromeStub.sidePanel.open).not.toHaveBeenCalled();
   });
 });

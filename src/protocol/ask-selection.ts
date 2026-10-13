@@ -42,7 +42,7 @@ export const askDraftSchema = z.object({
 });
 export type AskDraft = z.infer<typeof askDraftSchema>;
 
-const SECRET_PARAM = /pass(word)?|secret|token|key|auth|code|session|sig(nature)?|state|ticket|jwt/i;
+const SECRET_PARAM = /pass(word)?|secret|token|key|auth|code|session|sig(nature)?|state|ticket|jwt|credential|^(t|s|k|sid|x-amz-.*|x-goog-.*)$/i;
 
 /** The page address without its fragment and without query values that could carry a credential. */
 export function shareableUrl(raw: string): string {

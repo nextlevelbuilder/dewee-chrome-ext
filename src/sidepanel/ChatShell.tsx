@@ -322,7 +322,8 @@ export function ChatShell({
           ref={composerRef}
           agentName={agentName}
           busy={busy}
-          draft={askDraft}
+          draft={askDraft.draft}
+          onDraftTaken={askDraft.taken}
           disabled={chat.state.phase === 'reconciling' || chat.state.phase === 'loading'}
           onSend={(text) => chat.send(text)}
           onStop={() => void chat.stop()}

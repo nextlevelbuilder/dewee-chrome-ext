@@ -21,23 +21,39 @@ svg { width: 13px; height: 13px; }
 const SPARKLE =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>';
 
+const FIELD = 'input, textarea, select';
+
 /** Fields whose selection must never be sent: inputs, text areas and editable regions. */
 function inEditable(node: Node | null): boolean {
   const element = node instanceof Element ? node : node?.parentElement;
-  return Boolean(element?.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]'));
+  return Boolean(element && (element.closest(FIELD) || (element as HTMLElement).isContentEditable || element.closest('[contenteditable]:not([contenteditable="false" i])')));
+}
+
+/** Chrome reports text selected inside an input or text area with the field's parent as anchor, so check focus too. */
+function focusInField(doc: Document): boolean {
+  const active = doc.activeElement;
+  return Boolean(active && (active.matches(FIELD) || (active as HTMLElement).isContentEditable));
 }
 
 export function selectedText(doc: Document): { text: string; rect: DOMRect } | null {
   const selection = doc.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
-  if (inEditable(selection.anchorNode) || inEditable(selection.focusNode)) return null;
+  if (focusInField(doc) || inEditable(selection.anchorNode) || inEditable(selection.focusNode)) return null;
   const text = selection.toString().trim();
   if (!text) return null;
   return { text: text.slice(0, MAX_SELECTION + 1), rect: selection.getRangeAt(0).getBoundingClientRect() };
 }
 
-/** Mounts the hidden button and its listeners; dispose removes both. */
-export function mountAskButton(doc: Document, send: (message: AskSelection) => unknown, label = defaultLabel(doc)): { button: HTMLButtonElement; dispose(): void } {
+/**
+ * Mounts the hidden button and its listeners; dispose removes both. yPerson decides whether a click
+ * came from the person rather than page script (tests replace it, since they cannot make trusted events).
+ */
+export function mountAskButton(
+  doc: Document,
+  send: (message: AskSelection) => unknown,
+  label = defaultLabel(doc),
+  byPerson: (event: MouseEvent) => boolean = (event) => event.isTrusted,
+): { button: HTMLButtonElement; dispose(): void } {
   const host = doc.createElement('dewee-ask');
   const root = host.attachShadow({ mode: 'closed' });
   if ('adoptedStyleSheets' in root && typeof CSSStyleSheet === 'function' && 'replaceSync' in CSSStyleSheet.prototype) {
@@ -86,8 +102,9 @@ export function mountAskButton(doc: Document, send: (message: AskSelection) => u
 
   // Keep the page selection while the button is pressed.
   button.addEventListener('mousedown', (event) => event.preventDefault());
-  button.addEventListener('click', () => {
-    if (!current) return;
+  // Only a real click: a page cannot press the button from script to slip its own text into a draft.
+  button.addEventListener('click', (event) => {
+    if (!current || !byPerson(event)) return;
     send({ type: 'ask.selection', text: current, url: doc.location.href, title: doc.title });
     hide();
   });
