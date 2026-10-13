@@ -110,7 +110,7 @@ select.input.compact {
   border: 0;
   border-radius: var(--radius-1);
   background: transparent;
-  color: var(--ink-3);
+  color: var(--ink-2);
   font-weight: 500;
   cursor: pointer;
   transition:

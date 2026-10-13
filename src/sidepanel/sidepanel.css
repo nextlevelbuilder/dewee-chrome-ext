@@ -310,12 +310,19 @@
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
-.session-item:hover {
+.session-item:hover:not(:disabled) {
   background: var(--paper-2);
 }
 .session-item.active {
   background: var(--accent-soft);
   color: var(--ink);
+}
+.session-item.active .session-date {
+  color: var(--ink-2);
+}
+.session-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 /* ---------- Transcript ---------- */

@@ -29,7 +29,7 @@
   align-items: center;
   gap: var(--space-2);
   margin: 0 0 12px;
-  font: 500 11px/1.4 var(--font-mono-stack);
+  font: 400 11px/1.4 var(--font-mono-stack);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent-ink);

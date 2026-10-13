@@ -21,13 +21,16 @@ export const Composer = forwardRef<HTMLTextAreaElement, { agentName: string; bus
       el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
     }, [text]);
 
-    // Send and Stop are different buttons, so swapping them drops focus to the page; keep it in the box.
-    const wasBusy = useRef(busy);
+    // Send and Stop are different buttons, and the box is disabled while a conversation loads; both
+    // drop focus to the page. Put it back in the box once it can take focus again.
+    const locked = busy || Boolean(disabled);
+    const wasState = useRef({ busy, locked });
     useEffect(() => {
-      if (wasBusy.current === busy) return;
-      wasBusy.current = busy;
-      if (document.activeElement === document.body) inputRef.current?.focus({ preventScroll: true });
-    }, [busy]);
+      const prev = wasState.current;
+      wasState.current = { busy, locked };
+      const changed = prev.busy !== busy || (prev.locked && !locked);
+      if (changed && !disabled && document.activeElement === document.body) inputRef.current?.focus({ preventScroll: true });
+    }, [busy, locked, disabled]);
 
     function submit() {
       const value = text.trim();

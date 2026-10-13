@@ -23,4 +23,33 @@ describe('Composer', () => {
 
     expect(input.value).toBe('');
   });
+
+  it('takes focus back once a loading conversation re-enables it', () => {
+    const props = { agentName: 'Super Agent', busy: false, onSend: vi.fn(), onStop: vi.fn() };
+    const { rerender } = render(<Composer {...props} disabled />);
+    const input = screen.getByRole('textbox');
+    expect(document.activeElement).toBe(document.body);
+
+    rerender(<Composer {...props} disabled={false} />);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('leaves focus alone when the user is elsewhere', () => {
+    const props = { agentName: 'Super Agent', busy: false, onSend: vi.fn(), onStop: vi.fn() };
+    const { rerender } = render(
+      <>
+        <button type="button">Other</button>
+        <Composer {...props} disabled />
+      </>,
+    );
+    const other = screen.getByRole('button', { name: 'Other' });
+    other.focus();
+    rerender(
+      <>
+        <button type="button">Other</button>
+        <Composer {...props} disabled={false} />
+      </>,
+    );
+    expect(document.activeElement).toBe(other);
+  });
 });

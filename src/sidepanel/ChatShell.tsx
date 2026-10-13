@@ -3,7 +3,7 @@
  * conversation list and the chat. Every request is scoped to the selected profile + workspace;
  * a failure is shown for that scope and never retried against another workspace or profile.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { createClient, pageAuthAdapter } from '@/api/client-factory';
 import { isApiError, type DeweeApiError } from '@/api/errors';
@@ -58,6 +58,9 @@ export function ChatShell({
   const [sessionLimit, setSessionLimit] = useState(20);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const drawerToggleRef = useRef<HTMLButtonElement>(null);
+  /** Where focus goes once the drawer has closed and the rest of the panel is no longer inert. */
+  const drawerReturn = useRef<'toggle' | 'composer'>('toggle');
+  const drawerWasOpen = useRef(false);
 
   const workspaces = useWorkspaces(client, onAuthError);
   const remembered = settings.selections[profile.id]?.workspaceId;
@@ -141,21 +144,37 @@ export function ChatShell({
   );
 
   const busy = chat.state.phase === 'streaming';
+  // Without an agent there is no list to show; forget the request so the drawer does not reopen by itself later.
+  if (showSessions && !agentKey) setShowSessions(false);
   const drawerOpen = showSessions && !!agentKey;
   const openDrawer = useCallback(() => setShowSessions(true), []);
   const closeDrawer = useCallback(() => {
+    drawerReturn.current = 'toggle';
     setShowSessions(false);
-    drawerToggleRef.current?.focus();
   }, []);
   const newChat = useCallback(() => {
     setSession(undefined);
+    drawerReturn.current = 'composer';
     setShowSessions(false);
     composerRef.current?.focus();
   }, [setSession]);
 
+  // Focus can only move back once the panel has rendered without inert; focusing from the
+  // click handler would land on an inert element and drop focus to the page body.
+  useLayoutEffect(() => {
+    if (drawerWasOpen.current && !drawerOpen) (drawerReturn.current === 'composer' ? composerRef : drawerToggleRef).current?.focus();
+    drawerWasOpen.current = drawerOpen;
+  }, [drawerOpen]);
+
+
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.altKey && (event.key === 'n' || event.key === 'N')) {
+      if (event.key === 'Escape' && drawerOpen) {
+        // Handled at the window so it still works after focus falls out of a re-rendered list.
+        event.preventDefault();
+        closeDrawer();
+      } else if (event.altKey && (event.key === 'n' || event.key === 'N')) {
         event.preventDefault();
         // Same rule as the button: a running reply is stopped first, never abandoned.
         if (!busy) newChat();
@@ -166,7 +185,7 @@ export function ChatShell({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [newChat, busy]);
+  }, [newChat, busy, drawerOpen, closeDrawer]);
 
   const deweeUrl = workspaceId && profile.kind === 'cloud' ? `${profile.origin}/workspaces/${encodeURIComponent(workspaceId)}` : profile.origin;
   const profileOptions = settings.profiles;
@@ -307,15 +326,16 @@ export function ChatShell({
       </div>
 
       {drawerOpen ? (
-        <div className="drawer" id="session-drawer" role="dialog" aria-modal="true" aria-label={t('sessions.title')} onKeyDown={(e) => e.key === 'Escape' && closeDrawer()}>
+        <div className="drawer" id="session-drawer" role="dialog" aria-modal="true" aria-label={t('sessions.title')}>
           <div className="drawer-scrim" aria-hidden="true" onClick={closeDrawer} />
           <SessionList
             state={sessions}
             current={sessionKey}
+            busy={busy}
             onSelect={(key) => {
               setSession(key);
+              drawerReturn.current = 'composer';
               setShowSessions(false);
-              composerRef.current?.focus();
             }}
             onNew={newChat}
             onClose={closeDrawer}

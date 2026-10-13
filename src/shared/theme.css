@@ -294,7 +294,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  font: 500 10.5px/1.4 var(--font-mono-stack);
+  font: 400 10.5px/1.4 var(--font-mono-stack);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--accent-ink);
