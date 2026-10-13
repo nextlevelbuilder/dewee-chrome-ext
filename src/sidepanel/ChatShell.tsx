@@ -17,6 +17,7 @@ import { AgentPicker } from './components/AgentPicker';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { SessionList } from './components/SessionList';
+import { useAskDraft } from './use-ask-draft';
 import { useAgents, useSessions, useWorkspaces } from './use-directory';
 
 /** Largest limit the sessions endpoint accepts. */
@@ -63,6 +64,7 @@ export function ChatShell({
   const drawerWasOpen = useRef(false);
 
   const workspaces = useWorkspaces(client, onAuthError);
+  const askDraft = useAskDraft();
   const { showReasoning, showToolDetails } = settings.prefs;
   const display = useMemo(() => ({ reasoning: showReasoning, toolDetails: showToolDetails }), [showReasoning, showToolDetails]);
   const remembered = settings.selections[profile.id]?.workspaceId;
@@ -320,6 +322,8 @@ export function ChatShell({
           ref={composerRef}
           agentName={agentName}
           busy={busy}
+          draft={askDraft.draft}
+          onDraftTaken={askDraft.taken}
           disabled={chat.state.phase === 'reconciling' || chat.state.phase === 'loading'}
           onSend={(text) => chat.send(text)}
           onStop={() => void chat.stop()}

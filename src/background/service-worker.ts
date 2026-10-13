@@ -5,12 +5,14 @@
 import { browser } from 'wxt/browser';
 import { isApiError } from '@/api/errors';
 import { requestSchema, type BackgroundResponse } from '@/protocol/messages';
+import { SETTINGS_KEY } from '@/shared/settings';
+import { handleAskSelection, isFromExtensionPage, isFromWebPage, lockLocalStorage, syncAskScript } from './ask-selection';
 import { BADGE_ALARM, refreshPendingBadge } from './pending-badge';
 import { authorizationFor, renewFor, signIn, signOut } from './token-manager';
 
-async function handle(message: unknown, senderId: string | undefined): Promise<BackgroundResponse> {
-  // Only this extension's own pages may talk to the worker.
-  if (senderId !== browser.runtime.id) return { ok: false, code: 'forbidden' };
+async function handle(message: unknown, sender: chrome.runtime.MessageSender): Promise<BackgroundResponse> {
+  // Only this extension's own pages may talk to the worker; a content script carries the same id but a web URL.
+  if (!isFromExtensionPage(sender)) return { ok: false, code: 'forbidden' };
   const parsed = requestSchema.safeParse(message);
   if (!parsed.success) return { ok: false, code: 'invalid_request' };
   const request = parsed.data;
@@ -39,18 +41,42 @@ async function handle(message: unknown, senderId: string | undefined): Promise<B
 }
 
 export function startServiceWorker(): void {
-  // Open the side panel when the toolbar icon is clicked (a user gesture); never inject into pages.
+  // Open the side panel when the toolbar icon is clicked (a user gesture). Nothing runs in web pages unless
+  // the person turns on "Ask Dewee" for selected text and grants site access.
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  // Remembered credentials live in `storage.local`; keep it out of reach of the opt-in page script.
+  void lockLocalStorage();
 
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    void handle(message, sender.id).then(sendResponse);
+    // A web page's content script may only send `ask.selection`; it never reaches the auth handlers.
+    if (isFromWebPage(sender)) {
+      handleAskSelection(message, sender);
+      return false;
+    }
+    void handle(message, sender).then(sendResponse);
     return true;
   });
+
+  // The page script follows the preference and the granted site access.
+  const syncAsk = () => void syncAskScript().catch(() => undefined);
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && SETTINGS_KEY in changes) syncAsk();
+  });
+  browser.permissions.onAdded.addListener(syncAsk);
+  browser.permissions.onRemoved.addListener(syncAsk);
+  // Learn the current state in a freshly started worker, so a stale page script is ignored.
+  syncAsk();
 
   void browser.alarms.create(BADGE_ALARM, { periodInMinutes: 1 });
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === BADGE_ALARM) void refreshPendingBadge();
   });
-  browser.runtime.onStartup.addListener(() => void refreshPendingBadge());
-  browser.runtime.onInstalled.addListener(() => void refreshPendingBadge());
+  browser.runtime.onStartup.addListener(() => {
+    void refreshPendingBadge();
+    syncAsk();
+  });
+  browser.runtime.onInstalled.addListener(() => {
+    void refreshPendingBadge();
+    syncAsk();
+  });
 }

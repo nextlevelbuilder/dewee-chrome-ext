@@ -51,7 +51,7 @@ Rules:
 - Never use the Dewee gateway master token as a client credential. Self-hosted mode uses a personal scoped API key (`operator.read`/`operator.write`).
 - Never render agent-generated HTML. Cards render from a fixed list of kinds validated with Zod; markdown is sanitized with DOMPurify.
 - No remote code, no `eval`, strict extension CSP. Host permissions are requested per gateway origin at runtime, never `<all_urls>`.
-- The side panel never reads the active page.
+- The side panel never reads the active page. The only exception is the opt-in "Ask Dewee" page script, which sends the text the person selected (never form fields) when they click its button, and only as an editable draft.
 
 ## Code layout
 

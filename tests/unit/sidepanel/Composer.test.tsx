@@ -53,3 +53,32 @@ describe('Composer', () => {
     expect(document.activeElement).toBe(other);
   });
 });
+
+describe('Composer draft', () => {
+  const base = { agentName: 'Super Agent', busy: false, onSend: vi.fn(), onStop: vi.fn() };
+
+  it('puts a draft in the box once, above anything typed, with the caret at the end and nothing sent', () => {
+    const { rerender } = render(<Composer {...base} />);
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'my note' } });
+
+    rerender(<Composer {...base} draft={{ id: 'd1', text: '> quote\n\n' }} />);
+    expect(input.value).toBe('> quote\n\nmy note');
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(input.value.length);
+    expect(base.onSend).not.toHaveBeenCalled();
+
+    // The same draft rendered again is not added twice.
+    rerender(<Composer {...base} draft={{ id: 'd1', text: '> quote\n\n' }} />);
+    expect(input.value).toBe('> quote\n\nmy note');
+
+    rerender(<Composer {...base} draft={{ id: 'd2', text: '> second\n\n' }} />);
+    expect(input.value).toBe('> second\n\n> quote\n\nmy note');
+  });
+
+  it('reports the draft as taken, so a remounted composer does not add it again', () => {
+    const onDraftTaken = vi.fn();
+    render(<Composer {...base} draft={{ id: 'd9', text: '> quote\n\n' }} onDraftTaken={onDraftTaken} />);
+    expect(onDraftTaken).toHaveBeenCalledWith('d9');
+  });
+});

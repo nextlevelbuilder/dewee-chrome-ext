@@ -44,3 +44,21 @@ test('options page switches theme and language', async ({ openOptions }) => {
   await options.getByLabel('Language').selectOption('vi');
   await expect(options.locator('html')).toHaveAttribute('lang', 'vi');
 });
+
+test('install asks for no site access, and Ask Dewee site access stays optional', async ({ serviceWorker }) => {
+  const manifest = await serviceWorker.evaluate(() => chrome.runtime.getManifest());
+  expect(manifest.host_permissions ?? []).not.toContain('https://*/*');
+  expect(manifest.optional_host_permissions).toContain('https://*/*');
+});
+
+test('storage.local can be limited to extension pages before the Ask Dewee script runs', async ({ serviceWorker }) => {
+  const result = await serviceWorker.evaluate(async () => {
+    try {
+      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+      return 'ok';
+    } catch (error) {
+      return String(error);
+    }
+  });
+  expect(result).toBe('ok');
+});

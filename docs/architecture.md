@@ -48,7 +48,7 @@ The extension is a thin Chrome MV3 client. Dewee (Gateway, or the CCP app for De
 - The panel calls the API directly. Moving every call through the service worker would add a message hop per SSE frame and a second place where tokens live. Only OAuth refresh, which must be single flight across pages, runs in the background.
 - Secrets never cross `chrome.runtime` messaging. The background message schema has no secret fields.
 - Card field labels and target names come from the extension's own copy. Agent text is shown as plain text, so an agent cannot dress up a phishing form.
-- Host permissions are optional and requested per origin at connect time. There is no `<all_urls>` and no content script.
+- Host permissions are optional and requested per origin at connect time. There is no `<all_urls>`. The only page script is the opt-in "Ask Dewee" button: turning it on in Settings requests `https://*/*` and registers the script at runtime; turning it off unregisters it. A click sends the selected text, title and address to the service worker, which opens the side panel and leaves a quoted draft in `storage.session` for the composer of that window. Nothing is sent to Dewee until the person submits.
 - One workspace per view. A load error in one workspace never falls back to another workspace or profile.
 
 See [api-contract.md](api-contract.md) for the wire contract and the two threat models for security reasoning.
