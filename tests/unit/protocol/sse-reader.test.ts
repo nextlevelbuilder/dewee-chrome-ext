@@ -11,6 +11,58 @@ describe('SseParser', () => {
     expect(parser.push('\n')).toEqual([{ event: 'chat.stopped', data: '{}' }]);
   });
 
+  it('treats a CRLF split across chunks as one line ending', () => {
+    const parser = new SseParser();
+    expect(parser.push('event: x\r')).toEqual([]);
+    expect(parser.push('\ndata: y\r\n\r\n')).toEqual([{ event: 'x', data: 'y' }]);
+  });
+
+  it('joins a CRLF split by an empty chunk', () => {
+    const parser = new SseParser();
+    expect(parser.push('data: a\r')).toEqual([]);
+    expect(parser.push('')).toEqual([]);
+    expect(parser.push('\n\n')).toEqual([{ event: 'message', data: 'a' }]);
+  });
+
+  it('gives one frame, not two, when the LF of a split CRLF opens the next chunk', () => {
+    const parser = new SseParser();
+    expect(parser.push('data: a\r')).toEqual([]);
+    expect(parser.push('\n\n')).toEqual([{ event: 'message', data: 'a' }]);
+  });
+
+  it('ends a frame with CR CR and treats the LF that follows as the end of that CRLF', () => {
+    const parser = new SseParser();
+    expect(parser.push('data: a\r\r')).toEqual([{ event: 'message', data: 'a' }]);
+    expect(parser.push('\n')).toEqual([]);
+    expect(parser.pending).toBe(0);
+  });
+
+  it('applies the cap exactly after a split CRLF, keeping the frame the LF completed', () => {
+    const parser = new SseParser(20);
+    expect(parser.push('data: a\r')).toEqual([]);
+    // The LF that ends the split CRLF is not part of the next line: 20 code units still fit.
+    expect(parser.push(`\n\ndata: ${'x'.repeat(14)}`)).toEqual([{ event: 'message', data: 'a' }]);
+    expect(parser.pending).toBe(20);
+    expect(() => parser.push('x')).toThrow(SseProtocolError);
+  });
+
+  it('keeps the frame a split CRLF completed when the rest of that chunk passes the cap', () => {
+    const parser = new SseParser(20);
+    parser.push('data: a\r');
+    let failure: unknown;
+    try {
+      parser.push(`\n\ndata: ${'x'.repeat(200)}`);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(SseProtocolError);
+    expect((failure as SseProtocolError).frames).toEqual([{ event: 'message', data: 'a' }]);
+  });
+
+  it('still accepts lone CR line endings', () => {
+    expect(new SseParser().push('data: a\rdata: b\r\r')).toEqual([{ event: 'message', data: 'a\nb' }]);
+  });
+
   it('joins multi-line data', () => {
     expect(new SseParser().push('data: a\ndata: b\n\n')).toEqual([{ event: 'message', data: 'a\nb' }]);
   });
@@ -154,6 +206,20 @@ describe('readSseFrames', () => {
     const frames = [];
     for await (const f of readSseFrames(body)) frames.push(f);
     expect(frames.map((f) => f.event)).toEqual(['chat.started', 'chat.stopped']);
+  });
+
+  it('treats a CRLF split across chunks as one line ending, up to the end of the stream', async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(encoder.encode('event: x\r'));
+        c.enqueue(encoder.encode('\ndata: y\r'));
+        c.close();
+      },
+    });
+    const frames = [];
+    for await (const f of readSseFrames(body)) frames.push(f);
+    expect(frames).toEqual([{ event: 'x', data: 'y' }]);
   });
 
   it('stops an endless line and cancels the body', async () => {
