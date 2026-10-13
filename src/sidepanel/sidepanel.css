@@ -10,6 +10,11 @@
   max-width: 440px;
   margin: 0 auto;
 }
+/* The drum relief sits on the whole panel, not the centred column. */
+.welcome-page {
+  --drum-size: 360px;
+  min-height: 100%;
+}
 .welcome-head {
   display: grid;
   justify-items: center;
@@ -64,7 +69,10 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3) var(--space-3);
   border-bottom: 1px solid var(--rule);
-  background: linear-gradient(180deg, color-mix(in oklch, var(--accent) 7%, var(--paper)), var(--paper));
+  /* A quarter of the drum face behind the header actions, over the accent tint. */
+  background:
+    var(--drum-face) right -110px top -110px / 220px no-repeat,
+    linear-gradient(180deg, color-mix(in oklch, var(--accent) 7%, var(--paper)), var(--paper));
 }
 .header-row {
   display: flex;
@@ -549,8 +557,23 @@
   align-content: center;
   gap: 12px;
   flex: 1 0 auto;
+  position: relative;
+  isolation: isolate;
   padding: 24px 12px 48px;
   text-align: center;
+}
+/* The drum face turns slowly behind the mascot, as on the dewee.sh hero. */
+.empty-state::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 50% auto auto 50%;
+  width: 300px;
+  aspect-ratio: 1;
+  margin: -186px 0 0 -150px;
+  background: var(--drum-face) center / contain no-repeat;
+  opacity: 0.7;
+  animation: drum-turn 360s linear infinite;
 }
 .empty-title {
   margin: 0;
@@ -795,6 +818,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .empty-state::before,
   .message,
   .popover,
   .session-list,

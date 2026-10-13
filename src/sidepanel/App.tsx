@@ -16,13 +16,15 @@ import './sidepanel.css';
 function Welcome({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
   return (
-    <div className="welcome">
-      <div className="welcome-head">
-        <BrandMark size={64} />
-        <h1 className="brand-title">Dewee</h1>
-        <p className="muted">{t('connect.intro')}</p>
+    <div className="welcome-page drum-texture">
+      <div className="welcome">
+        <div className="welcome-head">
+          <BrandMark size={64} />
+          <h1 className="brand-title">Dewee</h1>
+          <p className="muted">{t('connect.intro')}</p>
+        </div>
+        <div className="welcome-card">{children}</div>
       </div>
-      <div className="welcome-card">{children}</div>
     </div>
   );
 }

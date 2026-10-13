@@ -21,6 +21,8 @@
   --rule: oklch(0.885 0.018 282);
   --rule-strong: oklch(0.8 0.03 280);
   --bronze: oklch(0.6 0.085 70);
+  --drum-face: url('/patterns/dong-son-drum-light.svg'); /* Đông Sơn drum face, from the dewee.sh patterns */
+  --drum-tile: url('/patterns/dong-son-tile-light.svg');
   --accent: var(--brand-iris);
   --accent-ink: oklch(0.46 0.22 277);
   --accent-soft: oklch(0.935 0.035 282);
@@ -87,6 +89,8 @@
   --rule: oklch(0.34 0.035 280);
   --rule-strong: oklch(0.44 0.04 280);
   --bronze: oklch(0.76 0.08 78);
+  --drum-face: url('/patterns/dong-son-drum-dark.svg'); /* Đông Sơn drum face, from the dewee.sh patterns */
+  --drum-tile: url('/patterns/dong-son-tile-dark.svg');
   --accent: oklch(0.68 0.18 282);
   --accent-ink: oklch(0.8 0.12 285);
   --accent-soft: oklch(0.3 0.07 282);
@@ -121,6 +125,8 @@
     --rule: oklch(0.34 0.035 280);
     --rule-strong: oklch(0.44 0.04 280);
     --bronze: oklch(0.76 0.08 78);
+    --drum-face: url('/patterns/dong-son-drum-dark.svg'); /* Đông Sơn drum face, from the dewee.sh patterns */
+    --drum-tile: url('/patterns/dong-son-tile-dark.svg');
     --accent: oklch(0.68 0.18 282);
     --accent-ink: oklch(0.8 0.12 285);
     --accent-soft: oklch(0.3 0.07 282);
@@ -307,6 +313,25 @@ textarea {
   opacity: 0.6;
 }
 
+/* Đông Sơn drum ornaments, as on dewee.sh. Relief: part of the drum face rises from the top-right
+   corner of a surface, like the edge of a drum set behind it; `--drum-size` sets the face size. */
+.drum-texture {
+  --drum-size: 320px;
+  background-image: var(--drum-face);
+  background-repeat: no-repeat;
+  background-size: var(--drum-size);
+  background-position: right calc(var(--drum-size) * -0.5) top calc(var(--drum-size) * -0.5);
+}
+/* A strip of the drum's bands, used as an ornamental rule. */
+.drum-band {
+  block-size: 24px;
+  background: var(--drum-tile) 0 0 / 48px 24px repeat-x;
+}
+@keyframes drum-turn {
+  to {
+    transform: rotate(-1turn);
+  }
+}
 .notice {
   margin: 0;
   padding: var(--space-2) var(--space-3);

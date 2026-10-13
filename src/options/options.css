@@ -1,5 +1,13 @@
 @import '../shared/components.css';
 
+/* The drum relief rises from the top-right corner of the settings page. */
+body {
+  background-image: var(--drum-face);
+  background-repeat: no-repeat;
+  background-size: 520px;
+  background-position: right -260px top -260px;
+}
+
 .options {
   max-width: 680px;
   margin: 0 auto;
