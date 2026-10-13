@@ -1,7 +1,8 @@
 /** Conversation transcript: sanitized Markdown, tool activity, inline cards and error recovery. */
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import type { ChatMessage, ChatState, ToolActivity } from '@/chat/chat-state';
 import { looseCards } from '@/chat/chat-state';
+import { formatToolText } from '@/chat/tool-detail';
 import { ActionCard } from '@/credentials/ActionCard';
 import type { RespondFn } from '@/credentials/respond-types';
 import { errorText, hasMessage, useI18n } from '@/shared/i18n';
@@ -93,6 +94,7 @@ function MessageError({ message, onRetry, onReload, onShowSessions }: { message:
 function MessageItem({ message, cards, respond, deweeUrl, display, ...recovery }: { message: ChatMessage; cards: UiActionCard[]; respond: RespondFn; deweeUrl?: string; display: ChatDisplay } & Recovery) {
   const { t } = useI18n();
   const own = cards.filter((c) => message.cardIds?.includes(c.id));
+  const reasoning = useMemo(() => (display.reasoning ? formatToolText(message.thinking) : undefined), [display.reasoning, message.thinking]);
   return (
     <li className={`message message-${message.role}`} aria-busy={message.streaming || undefined}>
       {message.tools?.length ? (
@@ -102,10 +104,10 @@ function MessageItem({ message, cards, respond, deweeUrl, display, ...recovery }
           ))}
         </ul>
       ) : null}
-      {display.reasoning && message.thinking?.trim() ? (
+      {display.reasoning && reasoning ? (
         <details className="reasoning">
           <summary>{message.streaming && !message.content ? `${t('chat.thinking')}…` : t('chat.reasoning')}</summary>
-          <pre className="detail-text">{message.thinking.trim()}</pre>
+          <pre className="detail-text">{reasoning}</pre>
         </details>
       ) : message.thinking && message.streaming && !message.content ? (
         <p className="muted small thinking">{t('chat.thinking')}…</p>

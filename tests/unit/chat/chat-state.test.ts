@@ -85,6 +85,13 @@ describe('tool events', () => {
     expect(state.messages.at(-1)?.tools?.[0]?.output).toBeUndefined();
   });
 
+  it('keeps the tool name from the start when the completion has none', () => {
+    let state = streaming();
+    state = chatReducer(state, event({ type: 'tool.call.started', toolCall: { id: 't1', name: 'web_fetch' } }));
+    state = chatReducer(state, event({ type: 'tool.call.completed', toolCall: { id: 't1' } }));
+    expect(state.messages.at(-1)?.tools?.[0]).toMatchObject({ name: 'web_fetch', state: 'done' });
+  });
+
   it('never keeps credential-looking values from tool input', () => {
     let state = streaming();
     state = chatReducer(state, event({ type: 'tool.call.started', toolCall: { id: 't1', name: 'exec', arguments: { api_key: 'test-key-value', command: 'x --api-key test-key-value' } } }));
