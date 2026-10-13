@@ -62,7 +62,9 @@ export const IconExternal = icon(
     <path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
   </>,
 );
-/** The extension's own icon, shipped in `public/icons`. */
+/** Width over height of the Dewee mascot (the dew drop from the dewee.sh logo). */
+const MASCOT_RATIO = 475 / 393;
+/** The Dewee mascot, bundled in `public/brand` from the dewee.sh brand assets. `size` is its width. */
 export function BrandMark({ size = 20 }: { size?: number }) {
-  return <img className="brand-mark" src="/icons/48.png" width={size} height={size} alt="" aria-hidden="true" />;
+  return <img className="brand-mark" src="/brand/dewee-mascot.png" width={size} height={Math.round(size / MASCOT_RATIO)} alt="" aria-hidden="true" />;
 }

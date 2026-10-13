@@ -144,7 +144,7 @@ export function MessageList({
       ) : null}
       {state.phase !== 'loading' && state.messages.length === 0 && loose.length === 0 && !state.loadError ? (
         <div className="empty-state">
-          <BrandMark size={36} />
+          <BrandMark size={56} />
           <p className="empty-title">{t('chat.empty', { agent: agentName })}</p>
         </div>
       ) : null}

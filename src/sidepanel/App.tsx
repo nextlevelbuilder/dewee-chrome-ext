@@ -18,7 +18,7 @@ function Welcome({ children }: { children: React.ReactNode }) {
   return (
     <div className="welcome">
       <div className="welcome-head">
-        <BrandMark size={40} />
+        <BrandMark size={64} />
         <h1 className="brand-title">Dewee</h1>
         <p className="muted">{t('connect.intro')}</p>
       </div>

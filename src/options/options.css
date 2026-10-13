@@ -12,10 +12,6 @@
   align-items: center;
   gap: 12px;
 }
-.options-head .brand-mark {
-  border-radius: 8px;
-  box-shadow: var(--shadow-1);
-}
 .options h1 {
   margin: 0;
   font-family: var(--font-display-stack);

@@ -95,7 +95,7 @@ export function Settings() {
     <I18nContext.Provider value={{ t, locale }}>
       <main className="options">
         <header className="options-head">
-          <BrandMark size={28} />
+          <BrandMark size={40} />
           <h1>{t('settings.title')}</h1>
         </header>
         <section aria-labelledby="profiles-heading">

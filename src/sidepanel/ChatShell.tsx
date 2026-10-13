@@ -210,7 +210,7 @@ export function ChatShell({
               <IconSidebar />
             </button>
           ) : null}
-          <BrandMark size={24} />
+          <BrandMark size={26} />
           {profileOptions.length > 1 ? (
             <select
               className="input compact profile-select"

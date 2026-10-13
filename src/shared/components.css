@@ -56,7 +56,6 @@
 .brand-mark {
   display: block;
   flex: none;
-  border-radius: 6px;
 }
 .btn.small {
   min-height: 28px;

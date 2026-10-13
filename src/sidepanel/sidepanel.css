@@ -18,8 +18,6 @@
 }
 .welcome-head .brand-mark {
   margin-bottom: var(--space-2);
-  border-radius: var(--radius-3);
-  box-shadow: var(--shadow-2);
 }
 .welcome-head p {
   margin: 0;
@@ -79,7 +77,6 @@
 }
 .header-row > .brand-mark {
   margin: 0 var(--space-1) 0 2px;
-  border-radius: 7px;
 }
 .header-row .btn.icon {
   color: var(--ink-3);
@@ -554,11 +551,6 @@
   flex: 1 0 auto;
   padding: 24px 12px 48px;
   text-align: center;
-}
-.empty-state .brand-mark {
-  border-radius: 10px;
-  opacity: 0.95;
-  box-shadow: var(--shadow-2);
 }
 .empty-title {
   margin: 0;
