@@ -36,7 +36,7 @@ describe('updateSettings', () => {
 describe('loadSettings and saveSettings', () => {
   it('returns the defaults when nothing is stored', async () => {
     expect(await loadSettings()).toEqual(defaultSettings());
-    expect(defaultSettings()).toMatchObject({ version: 1, profiles: [], selections: {}, prefs: { theme: 'system', locale: 'auto' } });
+    expect(defaultSettings()).toMatchObject({ version: 1, profiles: [], selections: {}, prefs: { theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false } });
   });
 
   it('falls back to the defaults when the stored value is corrupt', async () => {
@@ -47,10 +47,15 @@ describe('loadSettings and saveSettings', () => {
   it('round-trips a saved value', async () => {
     const settings: Settings = {
       ...withProfiles([cloud, gateway], 'p_gw'),
-      prefs: { theme: 'dark', locale: 'vi' },
+      prefs: { theme: 'dark', locale: 'vi', showReasoning: true, showToolDetails: false },
     };
     await saveSettings(settings);
     expect(await loadSettings()).toEqual(settings);
+  });
+
+  it('keeps stored theme and language and turns the display options off when an older value lacks them', async () => {
+    await fakeBrowser.storage.local.set({ [SETTINGS_KEY]: { prefs: { theme: 'dark', locale: 'vi' } } });
+    expect((await loadSettings()).prefs).toEqual({ theme: 'dark', locale: 'vi', showReasoning: false, showToolDetails: false });
   });
 
   it('defaults a profile without the remember flag to false', async () => {

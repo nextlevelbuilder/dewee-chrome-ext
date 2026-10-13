@@ -41,8 +41,15 @@ const settingsSchema = z.object({
   activeProfileId: z.string().optional(),
   selections: z.record(z.string(), profileSelection).default({}),
   prefs: z
-    .object({ theme: z.enum(themes).default('system'), locale: z.enum(localePrefs).default('auto') })
-    .default({ theme: 'system', locale: 'auto' }),
+    .object({
+      theme: z.enum(themes).default('system'),
+      locale: z.enum(localePrefs).default('auto'),
+      /** Show the agent's reasoning text under each reply. */
+      showReasoning: z.boolean().default(false),
+      /** Show each tool call's input, output and error. */
+      showToolDetails: z.boolean().default(false),
+    })
+    .default({ theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false }),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 

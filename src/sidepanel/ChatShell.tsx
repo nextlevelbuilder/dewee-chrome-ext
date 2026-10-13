@@ -63,6 +63,8 @@ export function ChatShell({
   const drawerWasOpen = useRef(false);
 
   const workspaces = useWorkspaces(client, onAuthError);
+  const { showReasoning, showToolDetails } = settings.prefs;
+  const display = useMemo(() => ({ reasoning: showReasoning, toolDetails: showToolDetails }), [showReasoning, showToolDetails]);
   const remembered = settings.selections[profile.id]?.workspaceId;
   const workspaceList = workspaces.data ?? [];
   const workspace = workspaceList.find((w) => w.id === remembered) ?? (remembered ? undefined : workspaceList.find((w) => w.status === 'active') ?? workspaceList[0]);
@@ -301,7 +303,7 @@ export function ChatShell({
 
       <main className="chat-main">
         {agentKey && workspaceId ? (
-          <MessageList state={chat.state} agentName={agentName} respond={respond} deweeUrl={deweeUrl} onRetry={(message) => void chat.retry(message)} onLoadOlder={() => void chat.loadOlder()} onReload={() => void chat.reload()} onShowSessions={() => {
+          <MessageList state={chat.state} agentName={agentName} respond={respond} deweeUrl={deweeUrl} display={display} onRetry={(message) => void chat.retry(message)} onLoadOlder={() => void chat.loadOlder()} onReload={() => void chat.reload()} onShowSessions={() => {
             sessions.reload();
             setShowSessions(true);
           }} />

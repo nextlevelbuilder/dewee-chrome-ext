@@ -25,6 +25,7 @@ Scope: how a person gives a secret (API key, password, token) to Dewee when an a
 | Pending continuations kept across a switch or a closed panel | The panel stores only IDs in `storage.session` (profile id, workspace id, `session_key`, `agent_key`, `setup_action_id`), a boolean `held` flag and `in_progress_since` (a millisecond timestamp of the first 409 `continuation_in_progress`). These are not secrets and never include a card response or secret value. |
 | Overwriting an existing credential by accident | Update mode needs an explicit rotate step. |
 | Malicious OAuth link in a card | The panel shows the third-party notice and opens Dewee; completion is checked server side (`oauth_not_completed` until it is). |
+| Secret shown in optional reasoning or tool details | Both views are off by default (Settings > Chat display). Tool arguments, results and errors are kept only in memory, values under credential-like keys and `--api-key`/`token=`/`Bearer`/`sk-` patterns in text are replaced with `[redacted]` before they reach chat state, every field is clipped to 4,000 characters, and all of it renders as plain text in `<pre>`. Redaction is best effort; the Gateway remains the place that keeps secrets out of tool calls. |
 | Rendering attacks (HTML/JS in card or markdown) | No agent HTML. Markdown is sanitized with DOMPurify, images dropped, only http(s)/mailto links, `rel="noopener noreferrer nofollow"`. |
 
 ## Residual risks

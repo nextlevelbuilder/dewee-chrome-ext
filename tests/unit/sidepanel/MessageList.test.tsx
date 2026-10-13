@@ -51,3 +51,54 @@ describe('MessageList recovery focus', () => {
     expect(screen.queryByRole('button', { name: 'Send again' })).toBeNull();
   });
 });
+
+describe('MessageList optional details', () => {
+  beforeAll(() => {
+    Element.prototype.scrollIntoView ??= () => {};
+  });
+
+  const reply: ChatState = {
+    ...initialChatState('s1'),
+    phase: 'idle',
+    messages: [
+      { id: 'u1', role: 'user', content: 'Connect a provider' },
+      {
+        id: 'u1-reply',
+        role: 'assistant',
+        content: 'Done',
+        thinking: 'The user wants <b>a provider</b>.',
+        tools: [{ id: 't1', name: 'exec', state: 'error', input: '{\n  "command": "dewee providers list"\n}', error: '<img src=x onerror=alert(1)>' }],
+      },
+    ],
+  };
+  const props = { agentName: 'Super Agent', respond, onLoadOlder: vi.fn(), onShowSessions: vi.fn(), onRetry: vi.fn(), onReload: vi.fn() };
+
+  it('shows only the tool chip and no reasoning while both options are off', () => {
+    const { container } = render(<MessageList state={reply} {...props} />);
+    expect(screen.getByText('exec failed')).toBeTruthy();
+    expect(container.querySelector('details')).toBeNull();
+    expect(container.textContent).not.toContain('dewee providers list');
+    expect(container.textContent).not.toContain('a provider</b>');
+  });
+
+  it('shows reasoning and tool input and error as plain text when turned on', () => {
+    const { container } = render(<MessageList state={reply} {...props} display={{ reasoning: true, toolDetails: true }} />);
+    const reasoning = container.querySelector('details.reasoning');
+    expect(reasoning?.querySelector('summary')?.textContent).toBe('Reasoning');
+    expect(reasoning?.querySelector('pre')?.textContent).toBe('The user wants <b>a provider</b>.');
+
+    const tool = container.querySelector('details.tool-detail');
+    expect(tool?.querySelector('summary')?.textContent).toContain('exec failed');
+    expect(tool?.textContent).toContain('"command": "dewee providers list"');
+    expect(tool?.querySelector('.detail-error')?.textContent).toBe('<img src=x onerror=alert(1)>');
+    // Rendered as text, never as markup.
+    expect(container.querySelector('img:not(.brand-mark), b')).toBeNull();
+  });
+
+  it('keeps a tool without detail text as a plain chip even when details are on', () => {
+    const plain: ChatState = { ...reply, messages: [{ id: 'r', role: 'assistant', content: 'ok', tools: [{ id: 't', name: 'search', state: 'done' }] }] };
+    const { container } = render(<MessageList state={plain} {...props} display={{ reasoning: true, toolDetails: true }} />);
+    expect(container.querySelector('details')).toBeNull();
+    expect(screen.getByText('Used search')).toBeTruthy();
+  });
+});
