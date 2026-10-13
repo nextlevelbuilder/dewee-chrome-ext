@@ -2,7 +2,7 @@
 @import './theme.css';
 
 .muted {
-  color: var(--ink-soft);
+  color: var(--ink-3);
 }
 .small {
   font-size: 12px;
@@ -11,7 +11,7 @@
   display: block;
 }
 .mono {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono-stack);
 }
 .truncate {
   overflow: hidden;
@@ -34,7 +34,7 @@
   border: 0;
   padding: 0;
   background: none;
-  color: var(--indigo);
+  color: var(--accent-ink);
   font-weight: 500;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -47,10 +47,10 @@
   padding: 0 7px;
   border-radius: 999px;
   background: var(--accent-soft);
-  font: 600 10px/18px var(--font-body);
+  font: 600 10px/18px var(--font-body-stack);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--indigo);
+  color: var(--accent-ink);
   vertical-align: middle;
 }
 .brand-mark {
@@ -64,8 +64,8 @@
   font-size: 12.5px;
 }
 .btn.icon {
-  min-width: 30px;
-  min-height: 30px;
+  min-width: 32px;
+  min-height: 32px;
   padding: 0;
 }
 
@@ -82,7 +82,7 @@ select.input {
   cursor: pointer;
 }
 .input.compact {
-  min-height: 30px;
+  min-height: 32px;
   padding: 3px 8px;
 }
 select.input.compact {
@@ -101,29 +101,29 @@ select.input.compact {
   grid-template-columns: 1fr 1fr;
   gap: 2px;
   padding: 3px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-2);
   background: var(--paper-3);
 }
 .segment {
   min-height: 30px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-1);
   background: transparent;
-  color: var(--ink-soft);
+  color: var(--ink-3);
   font-weight: 500;
   cursor: pointer;
   transition:
-    background-color 120ms var(--ease),
-    color 120ms var(--ease);
+    background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
 }
 .segment:hover {
   color: var(--ink);
 }
 .segment.active {
-  background: var(--paper-2);
+  background: var(--surface);
   color: var(--ink);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-1);
 }
 .form-hint {
   margin: -4px 0 0;
@@ -136,10 +136,10 @@ select.input.compact {
 }
 .checkbox input {
   margin-top: 3px;
-  accent-color: var(--electric);
+  accent-color: var(--accent);
 }
 .hint-code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono-stack);
   font-size: 11px;
   line-height: 1.5;
   word-break: break-word;
@@ -147,7 +147,7 @@ select.input.compact {
 .advanced summary {
   width: fit-content;
   cursor: pointer;
-  color: var(--ink-soft);
+  color: var(--ink-3);
 }
 .advanced summary:hover {
   color: var(--ink);

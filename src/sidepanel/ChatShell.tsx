@@ -11,7 +11,7 @@ import { useChat } from '@/chat/use-chat';
 import type { RespondFn } from '@/credentials/respond-types';
 import { callBackground } from '@/protocol/messages';
 import { errorText, useI18n } from '@/shared/i18n';
-import { BrandMark, IconCompose, IconHistory, IconSettings } from '@/shared/icons';
+import { BrandMark, IconCompose, IconSettings, IconSidebar } from '@/shared/icons';
 import { withSelectedWorkspace, withWorkspaceSelection, workspaceSelectionOf, type Profile, type Settings } from '@/shared/settings';
 import { AgentPicker } from './components/AgentPicker';
 import { Composer } from './components/Composer';
@@ -57,6 +57,7 @@ export function ChatShell({
   const [showSessions, setShowSessions] = useState(false);
   const [sessionLimit, setSessionLimit] = useState(20);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const drawerToggleRef = useRef<HTMLButtonElement>(null);
 
   const workspaces = useWorkspaces(client, onAuthError);
   const remembered = settings.selections[profile.id]?.workspaceId;
@@ -140,6 +141,12 @@ export function ChatShell({
   );
 
   const busy = chat.state.phase === 'streaming';
+  const drawerOpen = showSessions && !!agentKey;
+  const openDrawer = useCallback(() => setShowSessions(true), []);
+  const closeDrawer = useCallback(() => {
+    setShowSessions(false);
+    drawerToggleRef.current?.focus();
+  }, []);
   const newChat = useCallback(() => {
     setSession(undefined);
     setShowSessions(false);
@@ -166,9 +173,25 @@ export function ChatShell({
 
   return (
     <div className="shell">
+      {/* While the drawer is open the rest of the panel is inert, so focus and screen readers stay in it. */}
+      <div className="shell-content" inert={drawerOpen || undefined}>
       <header className="shell-header">
         <div className="header-row">
-          <BrandMark />
+          {agentKey ? (
+            <button
+              ref={drawerToggleRef}
+              type="button"
+              className="btn btn-ghost icon"
+              aria-label={t('sessions.toggle')}
+              title={t('sessions.toggle')}
+              aria-expanded={drawerOpen}
+              aria-controls="session-drawer"
+              onClick={openDrawer}
+            >
+              <IconSidebar />
+            </button>
+          ) : null}
+          <BrandMark size={24} />
           {profileOptions.length > 1 ? (
             <select
               className="input compact profile-select"
@@ -194,21 +217,9 @@ export function ChatShell({
           </span>
           <span className="grow" />
           {agentKey ? (
-            <>
-              <button
-                type="button"
-                className={showSessions ? 'btn btn-ghost icon pressed' : 'btn btn-ghost icon'}
-                aria-label={t('sessions.toggle')}
-                title={t('sessions.toggle')}
-                aria-expanded={showSessions}
-                onClick={() => setShowSessions((v) => !v)}
-              >
-                <IconHistory />
-              </button>
-              <button type="button" className="btn btn-ghost icon" aria-label={t('sessions.new')} title={`${t('sessions.new')} (Alt+N)`} onClick={newChat} disabled={busy}>
-                <IconCompose />
-              </button>
-            </>
+            <button type="button" className="btn btn-ghost icon" aria-label={t('sessions.new')} title={`${t('sessions.new')} (Alt+N)`} onClick={newChat} disabled={busy}>
+              <IconCompose />
+            </button>
           ) : null}
           <button type="button" className="btn btn-ghost icon" aria-label={t('app.settings')} title={t('app.settings')} onClick={() => void browser.runtime.openOptionsPage()}>
             <IconSettings />
@@ -269,21 +280,6 @@ export function ChatShell({
         {agents.data && agentList.length === 0 ? <p className="notice">{t('header.noAgents')}</p> : null}
       </header>
 
-      {showSessions && agentKey ? (
-        <SessionList
-          state={sessions}
-          current={sessionKey}
-          onSelect={(key) => {
-            setSession(key);
-            setShowSessions(false);
-          }}
-          onNew={newChat}
-          onMore={() => setSessionLimit((n) => Math.min(n + 20, MAX_SESSION_LIMIT))}
-          canLoadMore={sessionLimit < MAX_SESSION_LIMIT}
-          onRetry={sessions.reload}
-        />
-      ) : null}
-
       <main className="chat-main">
         {agentKey && workspaceId ? (
           <MessageList state={chat.state} agentName={agentName} respond={respond} deweeUrl={deweeUrl} onRetry={(message) => void chat.retry(message)} onLoadOlder={() => void chat.loadOlder()} onReload={() => void chat.reload()} onShowSessions={() => {
@@ -307,6 +303,27 @@ export function ChatShell({
           onSend={(text) => chat.send(text)}
           onStop={() => void chat.stop()}
         />
+      ) : null}
+      </div>
+
+      {drawerOpen ? (
+        <div className="drawer" id="session-drawer" role="dialog" aria-modal="true" aria-label={t('sessions.title')} onKeyDown={(e) => e.key === 'Escape' && closeDrawer()}>
+          <div className="drawer-scrim" aria-hidden="true" onClick={closeDrawer} />
+          <SessionList
+            state={sessions}
+            current={sessionKey}
+            onSelect={(key) => {
+              setSession(key);
+              setShowSessions(false);
+              composerRef.current?.focus();
+            }}
+            onNew={newChat}
+            onClose={closeDrawer}
+            onMore={() => setSessionLimit((n) => Math.min(n + 20, MAX_SESSION_LIMIT))}
+            canLoadMore={sessionLimit < MAX_SESSION_LIMIT}
+            onRetry={sessions.reload}
+          />
+        </div>
       ) : null}
     </div>
   );
