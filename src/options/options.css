@@ -1,0 +1,54 @@
+@import '../shared/components.css';
+
+.options {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  display: grid;
+  gap: 24px;
+}
+.options h1 {
+  margin: 0;
+  font-size: 22px;
+}
+.options h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.panel {
+  padding: 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+.profile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.profile-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+.profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.prefs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}

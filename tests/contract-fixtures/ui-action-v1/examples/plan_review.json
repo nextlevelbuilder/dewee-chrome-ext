@@ -1,0 +1,13 @@
+{
+  "schema": "dewee.ui-action.v1",
+  "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a16",
+  "kind": "plan_review",
+  "status": "pending",
+  "title": "Review your setup plan",
+  "body": "Approve everything, approve only the essentials, or edit the plan.",
+  "payload": {
+    "plan_revision": 3
+  },
+  "created_at": "2026-10-06T10:00:00Z",
+  "expires_at": "2026-10-13T10:00:00Z"
+}

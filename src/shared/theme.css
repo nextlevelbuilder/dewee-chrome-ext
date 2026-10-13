@@ -1,0 +1,201 @@
+/* Dewee palette (see nextlevelbuilder/dewee docs/design-guidelines.md), tuned for a narrow side panel.
+   System fonts only: the extension loads no remote assets. */
+:root {
+  color-scheme: light;
+  --canvas: #fff9f3;
+  --paper: #fffdf8;
+  --paper-2: #ffffff;
+  --paper-3: #f6efe6;
+  --hairline: #e3d8cb;
+  --hairline-strong: #cdbfac;
+  --ink: #0b1426;
+  --ink-muted: #344256;
+  --ink-soft: #6a7283;
+  --indigo: #1f2bff;
+  --electric: #4a6bff;
+  --on-electric: #ffffff;
+  --orchid: #b66bff;
+  --verdigris: #0c8b78;
+  --amber: #b66f17;
+  --danger: #b42318;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(11, 20, 38, 0.06), 0 4px 12px rgba(11, 20, 38, 0.06);
+  --font-body: 'Be Vietnam Pro', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --canvas: #0d121e;
+  --paper: #121a29;
+  --paper-2: #172033;
+  --paper-3: #1b2538;
+  --hairline: #26324a;
+  --hairline-strong: #34425f;
+  --ink: #f4efe8;
+  --ink-muted: #c9cfdb;
+  --ink-soft: #8e97aa;
+  --indigo: #b7c2ff;
+  --electric: #8eafff;
+  --on-electric: #0b1426;
+  --verdigris: #3cc7b0;
+  --amber: #e7a54a;
+  --danger: #ff8a7a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --canvas: #0d121e;
+    --paper: #121a29;
+    --paper-2: #172033;
+    --paper-3: #1b2538;
+    --hairline: #26324a;
+    --hairline-strong: #34425f;
+    --ink: #f4efe8;
+    --ink-muted: #c9cfdb;
+    --ink-soft: #8e97aa;
+    --indigo: #b7c2ff;
+    --electric: #8eafff;
+    --on-electric: #0b1426;
+    --verdigris: #3cc7b0;
+    --amber: #e7a54a;
+    --danger: #ff8a7a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font: 14px/1.5 var(--font-body);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--indigo);
+  outline-offset: 2px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--paper-2);
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--indigo);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--electric);
+  border-color: var(--electric);
+  color: var(--on-electric);
+}
+.btn-danger {
+  color: var(--danger);
+}
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+}
+.field > span {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--paper-2);
+}
+.input:focus {
+  border-color: var(--indigo);
+  outline: none;
+}
+
+.label-mono {
+  font: 600 11px/1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.notice {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--hairline);
+  background: var(--paper-3);
+  font-size: 13px;
+}
+.notice-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.notice-warn {
+  border-color: var(--amber);
+}
+
+.skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--paper-3), var(--paper-2), var(--paper-3));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite linear;
+}
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

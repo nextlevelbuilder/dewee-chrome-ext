@@ -1,0 +1,19 @@
+{
+  "schema": "dewee.ui-action.v1",
+  "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a17",
+  "kind": "connection_test",
+  "status": "pending",
+  "title": "Checking the OpenAI connection",
+  "body": "We send one small request to confirm the key works.",
+  "payload": {
+    "target": {
+      "type": "provider",
+      "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4b01",
+      "name": "openai"
+    },
+    "step_id": "provider",
+    "credential_ref": "cred:v1:provider:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4b01"
+  },
+  "created_at": "2026-10-06T10:00:00Z",
+  "expires_at": "2026-10-13T10:00:00Z"
+}
