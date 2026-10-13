@@ -11,6 +11,7 @@ import { useChat } from '@/chat/use-chat';
 import type { RespondFn } from '@/credentials/respond-types';
 import { callBackground } from '@/protocol/messages';
 import { errorText, useI18n } from '@/shared/i18n';
+import { BrandMark, IconCompose, IconHistory, IconSettings } from '@/shared/icons';
 import { withSelectedWorkspace, withWorkspaceSelection, workspaceSelectionOf, type Profile, type Settings } from '@/shared/settings';
 import { AgentPicker } from './components/AgentPicker';
 import { Composer } from './components/Composer';
@@ -167,10 +168,10 @@ export function ChatShell({
     <div className="shell">
       <header className="shell-header">
         <div className="header-row">
-          <strong className="brand">Dewee</strong>
+          <BrandMark />
           {profileOptions.length > 1 ? (
             <select
-              className="input compact"
+              className="input compact profile-select"
               aria-label={t('header.profile')}
               value={profile.id}
               onChange={(e) => {
@@ -185,14 +186,32 @@ export function ChatShell({
               ))}
             </select>
           ) : (
-            <span className="muted small truncate">{profile.name}</span>
+            <span className="profile-name truncate">{profile.name}</span>
           )}
           <span className={online ? 'status-dot online' : 'status-dot offline'} role="status" aria-label={online ? t('app.online') : t('app.offline')} title={online ? t('app.online') : t('app.offline')} />
+          <span className="grow" />
+          {agentKey ? (
+            <>
+              <button
+                type="button"
+                className={showSessions ? 'btn btn-ghost icon pressed' : 'btn btn-ghost icon'}
+                aria-label={t('sessions.toggle')}
+                title={t('sessions.toggle')}
+                aria-expanded={showSessions}
+                onClick={() => setShowSessions((v) => !v)}
+              >
+                <IconHistory />
+              </button>
+              <button type="button" className="btn btn-ghost icon" aria-label={t('sessions.new')} title={`${t('sessions.new')} (Alt+N)`} onClick={newChat} disabled={busy}>
+                <IconCompose />
+              </button>
+            </>
+          ) : null}
           <button type="button" className="btn btn-ghost icon" aria-label={t('app.settings')} title={t('app.settings')} onClick={() => void browser.runtime.openOptionsPage()}>
-            ⚙
+            <IconSettings />
           </button>
         </div>
-        <div className="header-row">
+        <div className="header-row header-controls">
           {workspaces.loading ? <div className="skeleton grow" style={{ height: 32 }} /> : null}
           {workspaceList.length ? (
             <select
@@ -245,17 +264,6 @@ export function ChatShell({
           </p>
         ) : null}
         {agents.data && agentList.length === 0 ? <p className="notice">{t('header.noAgents')}</p> : null}
-        {agentKey ? (
-          <div className="header-row">
-            <button type="button" className="btn btn-ghost small" aria-expanded={showSessions} onClick={() => setShowSessions((v) => !v)}>
-              ☰ {t('sessions.toggle')}
-            </button>
-            <span className="grow" />
-            <button type="button" className="btn btn-ghost small" onClick={newChat} title="Alt+N" disabled={busy}>
-              + {t('sessions.new')}
-            </button>
-          </div>
-        ) : null}
       </header>
 
       {showSessions && agentKey ? (

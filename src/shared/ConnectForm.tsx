@@ -74,7 +74,7 @@ export function ConnectForm({ reconnect, onDone }: { reconnect?: Profile; onDone
           ))}
         </div>
       )}
-      <p className="muted small">{mode === 'cloud' ? t('connect.cloudHint') : t('connect.selfHostedHint')}</p>
+      <p className="muted small form-hint">{mode === 'cloud' ? t('connect.cloudHint') : t('connect.selfHostedHint')}</p>
 
       {reconnect ? null : (
         <label className="field" htmlFor={`${id}-name`}>

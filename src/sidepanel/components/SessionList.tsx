@@ -2,6 +2,7 @@
 import type { Session } from '@/api/schemas';
 import { errorText, useI18n } from '@/shared/i18n';
 import { isApiError } from '@/api/errors';
+import { IconPlus } from '@/shared/icons';
 import type { LoadState } from '../use-directory';
 
 export function SessionList({
@@ -35,9 +36,9 @@ export function SessionList({
   return (
     <nav className="session-list" aria-label={t('sessions.title')}>
       <div className="session-list-head">
-        <span className="label-mono">{t('sessions.title')}</span>
+        <span className="section-label">{t('sessions.title')}</span>
         <button type="button" className="btn btn-ghost small" onClick={onNew}>
-          + {t('sessions.new')}
+          <IconPlus size={14} /> {t('sessions.new')}
         </button>
       </div>
       {state.loading && !sessions.length ? <div className="skeleton" style={{ height: 48 }} /> : null}
@@ -54,8 +55,8 @@ export function SessionList({
         {sessions.map((s) => (
           <li key={s.key}>
             <button type="button" className={s.key === current ? 'session-item active' : 'session-item'} aria-current={s.key === current || undefined} onClick={() => onSelect(s.key)}>
-              <span className="truncate">{s.title || t('sessions.untitled')}</span>
-              <span className="muted small">{date(s.updated_at)}</span>
+              <span className="session-title truncate">{s.title || t('sessions.untitled')}</span>
+              <span className="session-date">{date(s.updated_at)}</span>
             </button>
           </li>
         ))}

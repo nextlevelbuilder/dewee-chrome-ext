@@ -2,68 +2,100 @@
    System fonts only: the extension loads no remote assets. */
 :root {
   color-scheme: light;
-  --canvas: #fff9f3;
-  --paper: #fffdf8;
+  --canvas: #fbf8f4;
+  --paper: #fffdfa;
   --paper-2: #ffffff;
-  --paper-3: #f6efe6;
-  --hairline: #e3d8cb;
-  --hairline-strong: #cdbfac;
-  --ink: #0b1426;
-  --ink-muted: #344256;
-  --ink-soft: #6a7283;
-  --indigo: #1f2bff;
-  --electric: #4a6bff;
+  --paper-3: #f3eee7;
+  --hover: rgba(11, 20, 38, 0.045);
+  --hairline: #ebe4da;
+  --hairline-strong: #d9cfc2;
+  --ink: #101828;
+  --ink-muted: #3a4658;
+  --ink-soft: #747c8b;
+  --indigo: #2a36e8;
+  --electric: #3d5afe;
+  --electric-hover: #2f4ae8;
   --on-electric: #ffffff;
+  --accent-soft: #eef0ff;
+  --accent-ring: rgba(61, 90, 254, 0.22);
+  --bubble: #f1ece4;
   --orchid: #b66bff;
   --verdigris: #0c8b78;
-  --amber: #b66f17;
+  --verdigris-soft: #e3f4f0;
+  --amber: #a8640f;
+  --amber-soft: #fbf1e2;
   --danger: #b42318;
+  --danger-soft: #fdecea;
+  --radius-lg: 14px;
   --radius: 10px;
-  --radius-sm: 6px;
-  --shadow: 0 1px 2px rgba(11, 20, 38, 0.06), 0 4px 12px rgba(11, 20, 38, 0.06);
-  --font-body: 'Be Vietnam Pro', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --radius-sm: 7px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 16px -4px rgba(16, 24, 40, 0.08);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, 0.04), 0 16px 32px -8px rgba(16, 24, 40, 0.18);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --font-body: 'Be Vietnam Pro', 'Inter', system-ui, -apple-system, 'Segoe UI Variable Text', 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --canvas: #0d121e;
-  --paper: #121a29;
-  --paper-2: #172033;
-  --paper-3: #1b2538;
-  --hairline: #26324a;
-  --hairline-strong: #34425f;
-  --ink: #f4efe8;
-  --ink-muted: #c9cfdb;
-  --ink-soft: #8e97aa;
-  --indigo: #b7c2ff;
-  --electric: #8eafff;
-  --on-electric: #0b1426;
+  --canvas: #0c1019;
+  --paper: #111623;
+  --paper-2: #161c2b;
+  --paper-3: #1c2333;
+  --hover: rgba(255, 255, 255, 0.05);
+  --hairline: #222a3b;
+  --hairline-strong: #2f394e;
+  --ink: #eef0f4;
+  --ink-muted: #c3c9d5;
+  --ink-soft: #8a93a6;
+  --indigo: #a9b6ff;
+  --electric: #6b86ff;
+  --electric-hover: #8098ff;
+  --on-electric: #ffffff;
+  --accent-soft: rgba(107, 134, 255, 0.14);
+  --accent-ring: rgba(107, 134, 255, 0.35);
+  --bubble: #1f2738;
   --verdigris: #3cc7b0;
+  --verdigris-soft: rgba(60, 199, 176, 0.12);
   --amber: #e7a54a;
+  --amber-soft: rgba(231, 165, 74, 0.12);
   --danger: #ff8a7a;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --danger-soft: rgba(255, 138, 122, 0.1);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 20px -6px rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.35), 0 18px 40px -8px rgba(0, 0, 0, 0.6);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     color-scheme: dark;
-    --canvas: #0d121e;
-    --paper: #121a29;
-    --paper-2: #172033;
-    --paper-3: #1b2538;
-    --hairline: #26324a;
-    --hairline-strong: #34425f;
-    --ink: #f4efe8;
-    --ink-muted: #c9cfdb;
-    --ink-soft: #8e97aa;
-    --indigo: #b7c2ff;
-    --electric: #8eafff;
-    --on-electric: #0b1426;
+    --canvas: #0c1019;
+    --paper: #111623;
+    --paper-2: #161c2b;
+    --paper-3: #1c2333;
+    --hover: rgba(255, 255, 255, 0.05);
+    --hairline: #222a3b;
+    --hairline-strong: #2f394e;
+    --ink: #eef0f4;
+    --ink-muted: #c3c9d5;
+    --ink-soft: #8a93a6;
+    --indigo: #a9b6ff;
+    --electric: #6b86ff;
+    --electric-hover: #8098ff;
+    --on-electric: #ffffff;
+    --accent-soft: rgba(107, 134, 255, 0.14);
+    --accent-ring: rgba(107, 134, 255, 0.35);
+    --bubble: #1f2738;
     --verdigris: #3cc7b0;
+    --verdigris-soft: rgba(60, 199, 176, 0.12);
     --amber: #e7a54a;
+    --amber-soft: rgba(231, 165, 74, 0.12);
     --danger: #ff8a7a;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --danger-soft: rgba(255, 138, 122, 0.1);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 20px -6px rgba(0, 0, 0, 0.45);
+    --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.35), 0 18px 40px -8px rgba(0, 0, 0, 0.6);
   }
 }
 
@@ -83,7 +115,9 @@ body,
 body {
   background: var(--canvas);
   color: var(--ink);
-  font: 14px/1.5 var(--font-body);
+  font: 13.5px/1.55 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -95,8 +129,18 @@ textarea {
 }
 
 :focus-visible {
-  outline: 2px solid var(--indigo);
+  outline: 2px solid var(--electric);
   outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent-ring);
+}
+
+/* Thin, quiet scrollbars that only show on the scrolling area. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline-strong) transparent;
 }
 
 .btn {
@@ -109,13 +153,26 @@ textarea {
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-sm);
   background: var(--paper-2);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition:
+    background-color 120ms var(--ease),
+    border-color 120ms var(--ease),
+    color 120ms var(--ease),
+    box-shadow 120ms var(--ease);
 }
 .btn:hover:not(:disabled) {
-  border-color: var(--indigo);
+  background: var(--paper-3);
+  border-color: var(--hairline-strong);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 .btn:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 .btn-primary {
@@ -123,21 +180,37 @@ textarea {
   border-color: var(--electric);
   color: var(--on-electric);
 }
+.btn-primary:hover:not(:disabled) {
+  background: var(--electric-hover);
+  border-color: var(--electric-hover);
+}
 .btn-danger {
   color: var(--danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
 }
 .btn-ghost {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
+  color: var(--ink-muted);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: transparent;
+  color: var(--ink);
 }
 
 .field {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
-.field > span {
-  font-size: 12px;
-  color: var(--ink-soft);
+.field > span:first-child {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-muted);
 }
 .input {
   width: 100%;
@@ -146,39 +219,57 @@ textarea {
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-sm);
   background: var(--paper-2);
+  transition:
+    border-color 120ms var(--ease),
+    box-shadow 120ms var(--ease);
+}
+.input::placeholder {
+  color: var(--ink-soft);
 }
 .input:focus {
-  border-color: var(--indigo);
+  border-color: var(--electric);
+  box-shadow: 0 0 0 3px var(--accent-ring);
   outline: none;
 }
+.input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+.input:disabled {
+  opacity: 0.6;
+}
 
-.label-mono {
-  font: 600 11px/1.4 var(--font-mono);
-  letter-spacing: 0.12em;
+.section-label {
+  font: 600 11px/1.4 var(--font-body);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-soft);
 }
 
 .notice {
-  padding: 8px 10px;
+  margin: 0;
+  padding: 8px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--hairline);
   background: var(--paper-3);
-  font-size: 13px;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 .notice-error {
-  border-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 .notice-warn {
-  border-color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 35%, transparent);
+  background: var(--amber-soft);
+  color: var(--ink);
 }
 
 .skeleton {
   border-radius: var(--radius-sm);
-  background: linear-gradient(90deg, var(--paper-3), var(--paper-2), var(--paper-3));
+  background: linear-gradient(90deg, var(--paper-3), var(--hover), var(--paper-3));
   background-size: 200% 100%;
-  animation: shimmer 1.2s infinite linear;
+  animation: shimmer 1.4s infinite linear;
 }
 @keyframes shimmer {
   to {
@@ -188,6 +279,10 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .skeleton {
     animation: none;
+  }
+  .btn,
+  .input {
+    transition: none;
   }
 }
 

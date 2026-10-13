@@ -8,6 +8,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import type { SecretRequestEnvelope } from '@/protocol/ui-action';
 import { errorText, useI18n } from '@/shared/i18n';
+import { IconLock } from '@/shared/icons';
 import { fieldLabel, targetLabel } from './labels';
 import type { RespondFn } from './respond-types';
 
@@ -35,7 +36,7 @@ export function CredentialsForm({ card, respond, interactive }: { card: SecretRe
   const head = (
     <div className="secret-head">
       <p className="secret-destination">
-        <span aria-hidden="true">🔒</span>{' '}
+        <IconLock className="secret-icon" size={14} />
         {/* A card closed without an answer (cancelled, expired, failed) must not claim it saved anything. */}
         {t(interactive || card.status === 'resolved' ? 'secret.destination' : 'secret.destinationClosed', { target: destination })}
       </p>

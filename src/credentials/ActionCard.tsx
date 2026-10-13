@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { isUiActionOpen, type UiActionCard, type UiActionPayloadByKind } from '@/protocol/ui-action';
 import { errorText, useI18n } from '@/shared/i18n';
+import { IconExternal } from '@/shared/icons';
 import { CredentialsForm } from './CredentialsForm';
 import type { RespondFn } from './respond-types';
 
@@ -112,7 +113,7 @@ function OAuthCard({ card, respond, deweeUrl }: CardProps & { card: Extract<UiAc
       <div className="card-actions">
         {deweeUrl ? (
           <a className="btn" href={deweeUrl} target="_blank" rel="noopener noreferrer">
-            {t('oauth.openDewee')}
+            {t('oauth.openDewee')} <IconExternal size={13} />
           </a>
         ) : null}
         <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void submit({})}>
@@ -184,8 +185,8 @@ function CardBody({ card, respond, deweeUrl }: CardProps) {
         <p className="muted small">
           {t('card.openInDewee')}{' '}
           {deweeUrl ? (
-            <a href={deweeUrl} target="_blank" rel="noopener noreferrer">
-              Dewee ↗
+            <a className="external-link" href={deweeUrl} target="_blank" rel="noopener noreferrer">
+              Dewee <IconExternal size={12} />
             </a>
           ) : null}
         </p>
