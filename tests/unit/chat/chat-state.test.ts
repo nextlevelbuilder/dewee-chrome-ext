@@ -74,7 +74,28 @@ describe('tool events', () => {
     expect(state.messages.at(-1)?.tools).toEqual([{ id: 't1', name: 'search', state: 'running', viaAgent: undefined }]);
 
     state = chatReducer(state, event({ type: 'tool.call.completed', toolCall: { id: 't1', name: 'search', resultSummary: 'ok' } }));
-    expect(state.messages.at(-1)?.tools).toEqual([{ id: 't1', name: 'search', state: 'done', viaAgent: undefined }]);
+    expect(state.messages.at(-1)?.tools).toEqual([{ id: 't1', name: 'search', state: 'done', viaAgent: undefined, output: 'ok' }]);
+  });
+
+  it('keeps the call input from the start and adds the output or error from the end', () => {
+    let state = streaming();
+    state = chatReducer(state, event({ type: 'tool.call.started', toolCall: { id: 't1', name: 'exec', arguments: { command: 'dewee agents list' } } }));
+    state = chatReducer(state, event({ type: 'tool.call.error', toolCall: { id: 't1', name: 'exec', error: '  exit status 1  ' } }));
+    expect(state.messages.at(-1)?.tools?.[0]).toMatchObject({ state: 'error', input: '{\n  "command": "dewee agents list"\n}', error: 'exit status 1' });
+    expect(state.messages.at(-1)?.tools?.[0]?.output).toBeUndefined();
+  });
+
+  it('keeps the tool name from the start when the completion has none', () => {
+    let state = streaming();
+    state = chatReducer(state, event({ type: 'tool.call.started', toolCall: { id: 't1', name: 'web_fetch' } }));
+    state = chatReducer(state, event({ type: 'tool.call.completed', toolCall: { id: 't1' } }));
+    expect(state.messages.at(-1)?.tools?.[0]).toMatchObject({ name: 'web_fetch', state: 'done' });
+  });
+
+  it('never keeps credential-looking values from tool input', () => {
+    let state = streaming();
+    state = chatReducer(state, event({ type: 'tool.call.started', toolCall: { id: 't1', name: 'exec', arguments: { api_key: 'test-key-value', command: 'x --api-key test-key-value' } } }));
+    expect(state.messages.at(-1)?.tools?.[0]?.input).not.toContain('test-key-value');
   });
 
   it('marks a failed tool call as error', () => {

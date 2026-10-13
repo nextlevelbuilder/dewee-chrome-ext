@@ -1,7 +1,8 @@
 /** Conversation transcript: sanitized Markdown, tool activity, inline cards and error recovery. */
-import { memo, useEffect, useRef } from 'react';
-import type { ChatMessage, ChatState } from '@/chat/chat-state';
+import { memo, useEffect, useMemo, useRef } from 'react';
+import type { ChatMessage, ChatState, ToolActivity } from '@/chat/chat-state';
 import { looseCards } from '@/chat/chat-state';
+import { formatToolText } from '@/chat/tool-detail';
 import { ActionCard } from '@/credentials/ActionCard';
 import type { RespondFn } from '@/credentials/respond-types';
 import { errorText, hasMessage, useI18n } from '@/shared/i18n';
@@ -13,6 +14,49 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
   // Sanitized by DOMPurify in renderMarkdown; agent HTML never reaches the DOM unsanitized.
   return <div className="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />;
 });
+
+/** Optional detail the user turned on in Settings. */
+export interface ChatDisplay {
+  reasoning: boolean;
+  toolDetails: boolean;
+}
+
+function DetailBlock({ label, text, error }: { label: string; text?: string; error?: boolean }) {
+  if (!text) return null;
+  return (
+    <div className="detail-block">
+      <span className="detail-label">{label}</span>
+      {/* Plain text only: tool and model output never render as HTML. */}
+      <pre className={error ? 'detail-text detail-error' : 'detail-text'}>{text}</pre>
+    </div>
+  );
+}
+
+function ToolItem({ tool, details }: { tool: ToolActivity; details: boolean }) {
+  const { t } = useI18n();
+  const label = (
+    <>
+      <span className="tool-dot" aria-hidden="true" />
+      {t(tool.state === 'running' ? 'chat.tool.running' : tool.state === 'error' ? 'chat.tool.error' : 'chat.tool.done', { name: tool.name })}
+      {tool.viaAgent ? <span className="muted"> · {t('chat.viaAgent', { agent: tool.viaAgent })}</span> : null}
+    </>
+  );
+  const hasDetail = details && Boolean(tool.input || tool.output || tool.error);
+  return (
+    <li className={`tool tool-${tool.state}${hasDetail ? ' tool-expandable' : ''}`}>
+      {hasDetail ? (
+        <details className="tool-detail">
+          <summary>{label}</summary>
+          <DetailBlock label={t('chat.tool.input')} text={tool.input} />
+          <DetailBlock label={t('chat.tool.output')} text={tool.output} />
+          <DetailBlock label={t('chat.tool.errorDetail')} text={tool.error} error />
+        </details>
+      ) : (
+        label
+      )}
+    </li>
+  );
+}
 
 /** What a failed message can do next: send again, reload the conversation or show the conversation list. */
 interface Recovery {
@@ -47,23 +91,27 @@ function MessageError({ message, onRetry, onReload, onShowSessions }: { message:
   );
 }
 
-function MessageItem({ message, cards, respond, deweeUrl, ...recovery }: { message: ChatMessage; cards: UiActionCard[]; respond: RespondFn; deweeUrl?: string } & Recovery) {
+function MessageItem({ message, cards, respond, deweeUrl, display, ...recovery }: { message: ChatMessage; cards: UiActionCard[]; respond: RespondFn; deweeUrl?: string; display: ChatDisplay } & Recovery) {
   const { t } = useI18n();
   const own = cards.filter((c) => message.cardIds?.includes(c.id));
+  const reasoning = useMemo(() => (display.reasoning ? formatToolText(message.thinking) : undefined), [display.reasoning, message.thinking]);
   return (
     <li className={`message message-${message.role}`} aria-busy={message.streaming || undefined}>
       {message.tools?.length ? (
         <ul className="tool-list" aria-label="tools">
           {message.tools.map((tool) => (
-            <li key={tool.id} className={`tool tool-${tool.state}`}>
-              <span className="tool-dot" aria-hidden="true" />
-              {t(tool.state === 'running' ? 'chat.tool.running' : tool.state === 'error' ? 'chat.tool.error' : 'chat.tool.done', { name: tool.name })}
-              {tool.viaAgent ? <span className="muted"> · {t('chat.viaAgent', { agent: tool.viaAgent })}</span> : null}
-            </li>
+            <ToolItem key={tool.id} tool={tool} details={display.toolDetails} />
           ))}
         </ul>
       ) : null}
-      {message.thinking && message.streaming && !message.content ? <p className="muted small thinking">{t('chat.thinking')}…</p> : null}
+      {display.reasoning && reasoning ? (
+        <details className="reasoning">
+          <summary>{message.streaming && !message.content ? `${t('chat.thinking')}…` : t('chat.reasoning')}</summary>
+          <pre className="detail-text">{reasoning}</pre>
+        </details>
+      ) : message.thinking && message.streaming && !message.content ? (
+        <p className="muted small thinking">{t('chat.thinking')}…</p>
+      ) : null}
       {message.role === 'assistant' ? (
         message.content ? (
           <Markdown text={message.content} />
@@ -95,11 +143,13 @@ export function MessageList({
   onLoadOlder,
   onReload,
   onShowSessions,
+  display = { reasoning: false, toolDetails: false },
 }: {
   state: ChatState;
   agentName: string;
   respond: RespondFn;
   deweeUrl?: string;
+  display?: ChatDisplay;
   onLoadOlder(): void;
 } & Recovery) {
   const { t } = useI18n();
@@ -150,7 +200,7 @@ export function MessageList({
       ) : null}
       <ul className="message-list">
         {state.messages.slice(state.hiddenBefore).map((message) => (
-          <MessageItem key={message.id} message={message} cards={state.cards} respond={respond} deweeUrl={deweeUrl} onRetry={retry} onReload={reload} onShowSessions={onShowSessions} />
+          <MessageItem key={message.id} message={message} cards={state.cards} respond={respond} deweeUrl={deweeUrl} display={display} onRetry={retry} onReload={reload} onShowSessions={onShowSessions} />
         ))}
       </ul>
       {loose.map((card) => (

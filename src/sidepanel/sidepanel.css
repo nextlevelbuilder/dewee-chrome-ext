@@ -506,6 +506,90 @@
   margin: 0;
 }
 
+/* Optional details: a tool chip with input/output opens into a full-width panel. */
+.tool-expandable {
+  display: block;
+  padding: 0;
+  border-radius: 12px;
+}
+.tool-expandable:has(> details[open]) {
+  width: 100%;
+  border-radius: var(--radius-2);
+}
+.tool-detail > summary,
+.reasoning > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+.tool-detail > summary {
+  padding: 1px 8px;
+}
+.tool-detail > summary::-webkit-details-marker,
+.reasoning > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-detail > summary::after,
+.reasoning > summary::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur-1, 120ms) ease;
+}
+.tool-detail[open] > summary::after,
+.reasoning[open] > summary::after {
+  transform: rotate(45deg);
+}
+.tool-detail[open] {
+  padding-bottom: 8px;
+}
+.detail-block {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px 0;
+}
+.detail-label {
+  font: 400 10px/1.4 var(--font-mono-stack);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.detail-text {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: var(--radius-1);
+  background: var(--surface-hover);
+  color: var(--ink-2);
+  font: 11px/1.5 var(--font-mono-stack);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.detail-error {
+  color: var(--danger);
+}
+.reasoning {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.reasoning > summary {
+  width: fit-content;
+}
+.reasoning > .detail-text {
+  margin-top: 6px;
+  border-left: 2px solid var(--bronze);
+  border-radius: 0 var(--radius-1) var(--radius-1) 0;
+  font-family: inherit;
+  font-size: 12px;
+}
+
 .typing {
   display: inline-flex;
   gap: 4px;

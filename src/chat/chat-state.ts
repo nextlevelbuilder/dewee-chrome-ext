@@ -6,12 +6,17 @@
 import type { Continuation, HistoryMessage } from '@/api/schemas';
 import type { ChatEvent, RecoveryAction, RecoveryCode } from '@/protocol/chat-events';
 import type { UiActionCard } from '@/protocol/ui-action';
+import { formatToolInput, formatToolText } from './tool-detail';
 
 export interface ToolActivity {
   id: string;
   name: string;
   state: 'running' | 'done' | 'error';
   viaAgent?: string;
+  /** Redacted, clipped plain text for the optional details view; kept in memory only. */
+  input?: string;
+  output?: string;
+  error?: string;
 }
 
 export interface ChatMessage {
@@ -137,10 +142,12 @@ function patchStreaming(state: ChatState, patch: (message: ChatMessage) => ChatM
   return { ...state, messages };
 }
 
-function upsertTool(tools: ToolActivity[] | undefined, tool: ToolActivity): ToolActivity[] {
+function upsertTool(tools: ToolActivity[] | undefined, change: Omit<ToolActivity, 'name'> & { name?: string }): ToolActivity[] {
+  // Fields an event does not carry (a completion has no arguments) keep their earlier value.
+  const tool = Object.fromEntries(Object.entries(change).filter(([, value]) => value !== undefined)) as typeof change;
   const list = tools ?? [];
   const index = list.findIndex((t) => t.id === tool.id);
-  if (index < 0) return [...list, tool];
+  if (index < 0) return [...list, { ...tool, name: tool.name ?? 'tool' }];
   const next = list.slice();
   next[index] = { ...next[index]!, ...tool };
   return next;
@@ -157,7 +164,7 @@ function applyEvent(state: ChatState, event: ChatEvent): ChatState {
     case 'tool.call.started':
       return patchStreaming(state, (m) => ({
         ...m,
-        tools: upsertTool(m.tools, { id: event.toolCall.id ?? localId('tool'), name: event.toolCall.name ?? 'tool', state: 'running', viaAgent: event.toolCall.viaAgent }),
+        tools: upsertTool(m.tools, { id: event.toolCall.id ?? localId('tool'), name: event.toolCall.name, state: 'running', viaAgent: event.toolCall.viaAgent, input: formatToolInput(event.toolCall.arguments) }),
       }));
     case 'tool.call.completed':
     case 'tool.call.error': {
@@ -167,9 +174,11 @@ function applyEvent(state: ChatState, event: ChatEvent): ChatState {
         ...m,
         tools: upsertTool(m.tools, {
           id: call.id ?? localId('tool'),
-          name: call.name ?? 'tool',
+          name: call.name,
           state: event.type === 'tool.call.error' ? 'error' : 'done',
           viaAgent: call.viaAgent,
+          output: formatToolText(call.resultSummary),
+          error: formatToolText(call.error),
         }),
         cardIds: card && !(m.cardIds ?? []).includes(card.id) ? [...(m.cardIds ?? []), card.id] : m.cardIds,
       }));

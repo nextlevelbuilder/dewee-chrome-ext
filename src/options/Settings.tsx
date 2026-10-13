@@ -7,7 +7,7 @@ import { ConnectForm } from '@/shared/ConnectForm';
 import { removeProfile, signOutProfile, verifyProfile } from '@/shared/connect';
 import { errorText, I18nContext, useI18n } from '@/shared/i18n';
 import { BrandMark, IconLock, IconPlus } from '@/shared/icons';
-import { localePrefs, themes, type Profile } from '@/shared/settings';
+import { localePrefs, themes, type Profile, type Settings as StoredSettings } from '@/shared/settings';
 import { useSettings, type SettingsState } from '@/shared/use-settings';
 import './options.css';
 
@@ -86,6 +86,29 @@ function ProfileRow({ profile, active, connected, update }: { profile: Profile; 
   );
 }
 
+type BooleanPref = { [K in keyof StoredSettings['prefs']]: StoredSettings['prefs'][K] extends boolean ? K : never }[keyof StoredSettings['prefs']];
+
+/** One on/off preference with its explanation, saved as soon as it changes. */
+function PrefToggle({ pref, label, hint, settings, update }: { pref: BooleanPref; label: string; hint: string; settings: StoredSettings | null; update: SettingsState['update'] }) {
+  return (
+    <label className="checkbox">
+      <input
+        type="checkbox"
+        checked={settings?.prefs[pref] ?? false}
+        disabled={!settings}
+        onChange={(e) => {
+          const on = e.target.checked;
+          void update((s) => ({ ...s, prefs: { ...s.prefs, [pref]: on } }));
+        }}
+      />
+      <span>
+        <span className="block">{label}</span>
+        <span className="muted small block">{hint}</span>
+      </span>
+    </label>
+  );
+}
+
 export function Settings() {
   const state = useSettings();
   const { settings, connected, update, t, locale } = state;
@@ -146,6 +169,13 @@ export function Settings() {
                 ))}
               </select>
             </label>
+          </div>
+        </section>
+        <section aria-labelledby="display-heading">
+          <h2 id="display-heading">{t('settings.display')}</h2>
+          <div className="panel stack">
+            <PrefToggle pref="showReasoning" label={t('settings.showReasoning')} hint={t('settings.showReasoning.hint')} settings={settings} update={update} />
+            <PrefToggle pref="showToolDetails" label={t('settings.showToolDetails')} hint={t('settings.showToolDetails.hint')} settings={settings} update={update} />
           </div>
           <p className="privacy muted small">
             <IconLock size={13} />
