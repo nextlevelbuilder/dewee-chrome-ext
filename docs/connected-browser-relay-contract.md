@@ -191,7 +191,11 @@ The tool runs only for runs bound to the person by the credential that started
 them (direct chat over an owner-bound API key or an authenticated session). Runs
 from chat channels are refused (`permission_denied`) until verified account
 linking exists. A command still running when its grant expires is cancelled
-(`grant_expired`); a revoked grant reports `grant_revoked`.
+(`grant_expired`); a revoked grant reports `grant_revoked`, also for a command in
+flight (an acknowledged interact command reports `outcome_unknown` in both cases).
+`screenshot` is refused (`permission_denied`) before the device is asked when the
+run's workspace is shared with other people, because the image is stored as a
+file in that workspace.
 
 The Gateway also checks every result: content from a page outside the grant is
 withheld (`origin_not_granted`), the `tabs` list hides the title and URL of tabs
