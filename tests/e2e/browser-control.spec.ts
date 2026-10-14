@@ -3,19 +3,23 @@
  * enroll, attach, grant.create, browser.command) and a loopback page server plays the site.
  * The person's side (enroll, allow, approve, Stop, revoke) goes through the real side panel.
  */
-import type { Page, Worker } from '@playwright/test';
 import { dumpStorage, expect, test } from './fixtures';
-import { AGENT, BrowserRelay, RELAY_API_KEY, startPageServer, type CommandOutcome } from './support/browser-relay';
+import { BrowserRelay, startPageServer } from './support/browser-relay';
+import { connectedBrowser, refOf } from './support/connect-browser';
 
 let relay: BrowserRelay;
 let site: Awaited<ReturnType<typeof startPageServer>>;
 let siteOrigin: string;
+let connectBrowser: ReturnType<typeof connectedBrowser>['connectBrowser'];
+let run: ReturnType<typeof connectedBrowser>['run'];
+let openSite: ReturnType<typeof connectedBrowser>['openSite'];
 
 test.beforeEach(async () => {
   relay = new BrowserRelay();
   await relay.start();
   site = await startPageServer();
   siteOrigin = `http://127.0.0.1:${site.port}`;
+  ({ connectBrowser, run, openSite } = connectedBrowser(relay, () => siteOrigin));
 });
 
 test.afterEach(async () => {
@@ -23,66 +27,15 @@ test.afterEach(async () => {
   await site.stop();
 });
 
-/** A self-hosted profile with its API key and "Connected browser" on, written where the extension keeps them. */
-async function seedProfile(worker: Worker): Promise<void> {
-  await worker.evaluate(
-    async ({ origin, key }) => {
-      await chrome.storage.session.set({ 'credential:p_e2e': { kind: 'api_key', apiKey: key } });
-      await chrome.storage.local.set({
-        settings: {
-          version: 1,
-          profiles: [{ id: 'p_e2e', name: 'Local gateway', kind: 'gateway', origin, remember: false }],
-          activeProfileId: 'p_e2e',
-          selections: {},
-          prefs: { theme: 'system', locale: 'en', showReasoning: false, showToolDetails: false, askOnSelection: false, connectedBrowser: true },
-        },
-      });
-    },
-    { origin: relay.origin, key: RELAY_API_KEY },
-  );
-}
-
-/** Registers this browser and allows the test agent on the loopback site, through the side panel. */
-async function connectBrowser(worker: Worker, openPanel: () => Promise<Page>, capability: 'read' | 'control' = 'control'): Promise<Page> {
-  await seedProfile(worker);
-  const panel = await openPanel();
-  await panel.getByTestId('browser-toggle').click();
-  const drawer = panel.getByRole('dialog', { name: 'Browser control' });
-  await expect(drawer.getByTestId('browser-status')).toHaveText('Connected');
-  await expect(drawer.getByLabel('Device name')).not.toHaveValue('');
-  await drawer.getByRole('button', { name: 'Register this browser' }).click();
-  await expect(drawer.getByTestId('browser-device-name')).toBeVisible();
-  await drawer.getByRole('checkbox', { name: AGENT.name }).check();
-  await drawer.getByLabel('Sites, one per line').fill(siteOrigin);
-  if (capability === 'control') await drawer.getByRole('radio', { name: /Read and act/ }).check();
-  await drawer.getByRole('button', { name: 'Allow', exact: true }).click();
-  await expect(drawer.getByTestId('browser-grants')).toContainText(siteOrigin);
-  expect(relay.activeGrant()).toMatchObject({ origins: [siteOrigin], agent_ids: [AGENT.id] });
-  return panel;
-}
-
-async function run(action: string, params: Record<string, unknown>, options?: Parameters<BrowserRelay['command']>[2]): Promise<CommandOutcome> {
-  const { commandId, outcome } = relay.command(action, params, options);
-  const result = await outcome;
-  // Acknowledged after validation, before the result.
-  expect(relay.acks).toContain(commandId);
-  return result;
-}
-
-function refOf(text: string, name: string): string {
-  const ref = text.split('\n').find((line) => /\[e\d+\]/.test(line) && line.includes(`"${name}"`))?.match(/\[(e\d+)\]/)?.[1];
-  if (!ref) throw new Error(`no ref for ${name} in:\n${text}`);
-  return ref;
-}
-
-async function openSite(): Promise<{ tab: string; text: string; generation: number }> {
-  const opened = await run('open', { url: `${siteOrigin}/account` });
-  expect(opened).toMatchObject({ ok: true, result: { tab: 't1', url: `${siteOrigin}/account`, title: 'E2E Shop' } });
-  const snap = await run('snapshot', { tab: 't1' });
-  expect(snap.ok).toBe(true);
-  const result = snap.result as { text: string; generation: number };
-  return { tab: 't1', text: result.text, generation: result.generation };
-}
+test('the Standard build has no debugger permission and announces only standard', async ({ serviceWorker, openPanel }) => {
+  const manifest = await serviceWorker.evaluate(() => chrome.runtime.getManifest());
+  expect(manifest.permissions ?? []).not.toContain('debugger');
+  expect(manifest.optional_permissions ?? []).not.toContain('debugger');
+  const panel = await connectBrowser(serviceWorker, openPanel);
+  expect(relay.capabilities.length).toBeGreaterThan(0);
+  for (const announced of relay.capabilities) expect(announced).toEqual(['standard']);
+  await expect(panel.getByTestId('browser-advanced')).toHaveCount(0);
+});
 
 test('an allowed agent opens, reads, types and clicks on the granted site', async ({ serviceWorker, openPanel }) => {
   await connectBrowser(serviceWorker, openPanel);

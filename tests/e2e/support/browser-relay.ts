@@ -113,6 +113,8 @@ export class BrowserRelay {
   readonly outcomes = new Map<string, CommandOutcome>();
   readonly controlStates: string[] = [];
   readonly methods: string[] = [];
+  /** Capabilities the device announced, per enroll or attach, in order. */
+  readonly capabilities: string[][] = [];
   private readonly connections = new Set<Connection>();
   private readonly waiters = new Map<string, (outcome: CommandOutcome) => void>();
   private server: Server | null = null;
@@ -271,6 +273,7 @@ export class BrowserRelay {
     }
     if (!connection.ready) return fail('UNAUTHORIZED', 'connect first');
     const deviceId = typeof params.device_id === 'string' ? params.device_id : '';
+    if ((method === 'browser.device.enroll' || method === 'browser.device.attach') && Array.isArray(params.capabilities)) this.capabilities.push(params.capabilities.map(String));
     switch (method) {
       case 'browser.device.enroll': {
         const device: Device = { device_id: randomUUID(), name: String(params.name), platform: String(params.platform), online: true, revoked_at: null };
@@ -363,15 +366,28 @@ export async function startPageServer(): Promise<{ port: number; stop(): Promise
   <div style="display:none">Hidden text e2e</div>
   <p id="status">Ready</p>
 </body></html>`;
+  // `/frames` embeds a same-origin frame and a cross-site one (localhost is another site than 127.0.0.1).
+  const frames = (port: number) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>E2E Frames</title></head>
+<body>
+  <h1>Frames</h1>
+  <iframe title="Same site" src="/inner" width="400" height="120"></iframe>
+  <iframe title="Other site" src="http://localhost:${port}/foreign" width="400" height="120"></iframe>
+</body></html>`;
+  const inner = `<!doctype html><html lang="en"><body><button type="button" onclick="this.textContent = 'Inner clicked'">Inner button</button></body></html>`;
+  const foreign = `<!doctype html><html lang="en"><body><p>Foreign text e2e</p><button type="button">Foreign button</button></body></html>`;
+  let port = 0;
   const server = createServer((req, res) => {
-    if (req.url === '/favicon.ico') {
-      res.writeHead(404).end();
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(page);
+    const html = (body: string) => res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(body);
+    if (req.url === '/favicon.ico') return void res.writeHead(404).end();
+    if (req.url === '/frames') return void html(frames(port));
+    if (req.url === '/inner') return void html(inner);
+    if (req.url === '/foreign') return void html(foreign);
+    html(page);
   });
+  // Loopback only; Chrome tries 127.0.0.1 for `localhost` when ::1 refuses, so the cross-site frame loads too.
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = (server.address() as AddressInfo).port;
+  port = (server.address() as AddressInfo).port;
   return {
     port,
     stop: () =>

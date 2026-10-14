@@ -5,9 +5,15 @@ import path from 'node:path';
 
 /** Pinned by the manifest `key` (extension-public-key.json). */
 export const EXTENSION_ID = 'poicgajeapmbcilfbeobdfedibiffbbm';
-const EXTENSION_PATH = path.resolve('.output-e2e/chrome-mv3');
+/** Unpacked builds from scripts/build-e2e.mjs, one per build profile. */
+const EXTENSION_PATHS = {
+  standard: path.resolve('.output-e2e/chrome-mv3'),
+  advanced: path.resolve('.output-e2e-advanced/chrome-mv3'),
+} as const;
 
 export interface ExtensionFixtures {
+  /** Which build to load; a spec picks Advanced with `test.use({ buildProfile: 'advanced' })`. */
+  buildProfile: keyof typeof EXTENSION_PATHS;
   context: BrowserContext;
   serviceWorker: Worker;
   openPanel(): Promise<Page>;
@@ -15,13 +21,14 @@ export interface ExtensionFixtures {
 }
 
 export const test = base.extend<ExtensionFixtures>({
-  // eslint-disable-next-line no-empty-pattern
-  context: async ({}, use) => {
+  buildProfile: ['standard', { option: true }],
+  context: async ({ buildProfile }, use) => {
+    const extensionPath = EXTENSION_PATHS[buildProfile];
     const userDataDir = mkdtempSync(path.join(tmpdir(), 'dewee-e2e-'));
     const context = await chromium.launchPersistentContext(userDataDir, {
       channel: 'chromium',
       locale: 'en-US',
-      args: [`--disable-extensions-except=${EXTENSION_PATH}`, `--load-extension=${EXTENSION_PATH}`],
+      args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
     });
     await use(context);
     await context.close();
