@@ -50,8 +50,10 @@ const settingsSchema = z.object({
       showToolDetails: z.boolean().default(false),
       /** Show an "Ask Dewee" button on selected page text (needs site access, requested when turned on). */
       askOnSelection: z.boolean().default(false),
+      /** Let granted Dewee agents drive tabs in this browser (self-hosted Gateway only). Off: no relay socket is opened. */
+      connectedBrowser: z.boolean().default(false),
     })
-    .default({ theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false, askOnSelection: false }),
+    .default({ theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false, askOnSelection: false, connectedBrowser: false }),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 

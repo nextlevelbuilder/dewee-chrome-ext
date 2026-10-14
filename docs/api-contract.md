@@ -187,6 +187,18 @@ The card uses the same `dewee.ui-action.v1` envelope, store, appliers, human-act
 
 Tool-issued cards expire after one hour. The Gateway re-checks the agent's current policy when the person responds; a revoked or narrowed policy cancels the card and the respond call returns `409` with the card's usual error `code` plus `error.details.reason: "credential_policy_revoked"` (dewee#1019). The panel maps that reason to its localized `error.credential_policy_revoked` message; any other or malformed `details` keeps the envelope's own `code`. Like every 409 on respond, the panel reloads the card (now cancelled) and shows the reason. Repeat requests for the same target in a session return the existing open card, and open cards are capped per conversation and per agent.
 
+## Connected browser relay (WebSocket)
+
+Self-hosted only, and only while the person turns on "Connected browser" in Settings. The service worker opens `wss://<gateway-origin>/ws` (`ws://` for loopback) and authenticates with the profile's personal API key in the `connect` frame; the gateway master token is never used. The full frame, method, action and error contract is [connected-browser-relay-contract.md](connected-browser-relay-contract.md); the Zod schemas that enforce it are in `src/browser/protocol.ts`.
+
+What the extension adds on its side of the contract:
+
+- Every command is checked again locally before it runs: grant present, not expired or revoked, agent in the grant, capability, exact origin of both the tab's current page and any requested URL, restricted pages, owned tab, Chrome host permission, and local Pause/Stop.
+- `ack` is sent after validation and before any work; exactly one `browser.command.result` follows. A command id is never executed twice. Results are not queued across a reconnect; commands in flight when the socket drops are cancelled locally, and the Gateway's deadline rules apply.
+- `type` is refused (`sensitive_field`) for password, payment-card and one-time-code fields. `screenshot` answers `unsupported_capability` (no advanced build yet).
+- Grants and devices are read by `grant_id` / `device_id`, also accepting `id`, since v1 does not pin the object shape beyond those fields.
+- Dewee Cloud: not available yet; the panel says so and no socket is opened.
+
 ## Backend status
 
 Already on Dewee `dev`: runtime SSE frames including `ui_action`, the UI action store with respond, appliers, human-actor gate and continuation, `GET /v1/auth/token/status`, and owner-bound API keys.

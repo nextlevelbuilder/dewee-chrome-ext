@@ -1,0 +1,194 @@
+import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { writeCredential } from '@/auth/credential-store';
+import type { BrowserApi } from '@/browser/chrome-api';
+import { BrowserSession, deviceKey } from '@/browser/session';
+import { defaultSettings, saveSettings, type Profile, type Settings } from '@/shared/settings';
+import { DEVICE_ID, grant, GRANT_ID, NOW } from './fixtures';
+import { FakeSocket, flush } from './fake-socket';
+
+const gw: Profile = { id: 'p_gw', name: 'Gateway', kind: 'gateway', origin: 'https://gw.example.test', remember: false };
+const gw2: Profile = { id: 'p_gw2', name: 'Other', kind: 'gateway', origin: 'https://other-gw.example.test', remember: false };
+const cloud: Profile = { id: 'p_cloud', name: 'Cloud', kind: 'cloud', origin: 'https://app.example.test', remember: false };
+
+function settings(activeProfileId: string, connectedBrowser = true): Settings {
+  const base = defaultSettings();
+  return { ...base, profiles: [gw, gw2, cloud], activeProfileId, prefs: { ...base.prefs, connectedBrowser } };
+}
+
+const api: BrowserApi = {
+  createTab: async () => 1,
+  updateTab: async () => undefined,
+  removeTab: async () => undefined,
+  getTab: async () => null,
+  run: async () => ({ ok: false, code: 'internal' }),
+  hasHostPermission: async () => true,
+};
+
+function setup() {
+  const sockets: FakeSocket[] = [];
+  const token = vi.fn(async (profileId: string) => `key-for-${profileId}`);
+  const session = new BrowserSession({
+    api,
+    token,
+    random: () => 0.5,
+    now: () => NOW,
+    createSocket: (url) => {
+      const socket = new FakeSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const socket = (): FakeSocket => {
+    const current = sockets.at(-1);
+    if (!current) throw new Error('no socket was created');
+    return current;
+  };
+  const connect = async () => {
+    socket().open();
+    await flush();
+    socket().reply(socket().last('connect'));
+    await flush();
+  };
+  return { session, sockets, socket, token, connect };
+}
+
+beforeEach(async () => {
+  fakeBrowser.runtime.getManifest = (() => ({ manifest_version: 3, name: 'Dewee', version: '0.1.0' })) as typeof fakeBrowser.runtime.getManifest;
+  await writeCredential(gw.id, { kind: 'api_key', apiKey: 'k1' }, false);
+  await writeCredential(gw2.id, { kind: 'api_key', apiKey: 'k2' }, false);
+});
+
+describe('BrowserSession', () => {
+  it('opens no socket while the preference is off', async () => {
+    await saveSettings(settings(gw.id, false));
+    const t = setup();
+    await t.session.sync();
+    expect(t.sockets).toHaveLength(0);
+    expect(t.session.state()).toMatchObject({ mode: 'off', connection: 'offline' });
+  });
+
+  it('does not fake the feature for Dewee Cloud', async () => {
+    await saveSettings(settings(cloud.id));
+    const t = setup();
+    await t.session.sync();
+    expect(t.sockets).toHaveLength(0);
+    expect(t.session.state().mode).toBe('cloud');
+  });
+
+  it('needs an API key credential', async () => {
+    await saveSettings(settings(gw.id));
+    await fakeBrowser.storage.session.clear();
+    await fakeBrowser.storage.local.remove(`credential:${gw.id}`);
+    const t = setup();
+    await t.session.sync();
+    expect(t.sockets).toHaveLength(0);
+    expect(t.session.state().mode).toBe('signed_out');
+  });
+
+  it('connects with the profile key, enrolls and remembers the server device id', async () => {
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    expect(t.socket().url).toBe('wss://gw.example.test/ws');
+    await t.connect();
+    expect(t.token).toHaveBeenCalledWith(gw.id);
+    expect(t.session.state()).toMatchObject({ mode: 'ready', connection: 'connected', device: null });
+
+    const enrolled = t.session.handleRequest({ type: 'browser.enroll', name: 'Work laptop' });
+    await flush();
+    expect(t.socket().last('browser.device.enroll').params).toEqual({ name: 'Work laptop', platform: expect.any(String), capabilities: ['standard'] });
+    t.socket().reply(t.socket().last('browser.device.enroll'), { device_id: DEVICE_ID });
+    await flush();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+    await expect(enrolled).resolves.toEqual({ ok: true });
+    expect((await fakeBrowser.storage.local.get(deviceKey(gw.id)))[deviceKey(gw.id)]).toEqual({ device_id: DEVICE_ID, name: 'Work laptop' });
+    expect(t.session.state()).toMatchObject({ device: { device_id: DEVICE_ID }, grants: [{ grant_id: GRANT_ID }] });
+  });
+
+  it('re-attaches the stored device after a reconnect and never replays requests', async () => {
+    vi.useFakeTimers();
+    try {
+      await fakeBrowser.storage.local.set({ [deviceKey(gw.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' } });
+      await saveSettings(settings(gw.id));
+      const t = setup();
+      await t.session.sync();
+      await t.connect();
+      t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+      await flush();
+      expect(t.session.state().connection).toBe('connected');
+
+      t.socket().drop();
+      expect(t.session.state().connection).toBe('reconnecting');
+      vi.advanceTimersByTime(750);
+      expect(t.sockets).toHaveLength(2);
+      await t.connect();
+      expect(t.socket().methods()).toEqual(['connect', 'browser.device.attach']);
+      expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes the socket and forgets grants on a profile switch', async () => {
+    await fakeBrowser.storage.local.set({ [deviceKey(gw.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' } });
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+    await flush();
+    expect(t.session.state().grants).toHaveLength(1);
+
+    await saveSettings(settings(gw2.id));
+    await t.session.sync();
+    expect(t.sockets[0]?.closed).toBe(true);
+    expect(t.sockets).toHaveLength(2);
+    expect(t.socket().url).toBe('wss://other-gw.example.test/ws');
+    expect(t.session.state()).toMatchObject({ device: null, grants: [] });
+    await t.connect();
+    expect(t.token).toHaveBeenLastCalledWith(gw2.id);
+  });
+
+  it('closes the socket when the preference is turned off', async () => {
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    await saveSettings(settings(gw.id, false));
+    await t.session.sync();
+    expect(t.sockets[0]?.closed).toBe(true);
+    expect(t.session.state()).toMatchObject({ mode: 'off', connection: 'offline' });
+  });
+
+  it('drops a grant the gateway revoked', async () => {
+    await fakeBrowser.storage.local.set({ [deviceKey(gw.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' } });
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+    await flush();
+    t.socket().event('browser.grant.revoked', { grant_id: GRANT_ID });
+    expect(t.session.state().grants).toEqual([]);
+  });
+
+  it('refuses a grant for a site Chrome has no access to', async () => {
+    await fakeBrowser.storage.local.set({ [deviceKey(gw.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' } });
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    api.hasHostPermission = async () => false;
+    try {
+      await t.session.sync();
+      await t.connect();
+      t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+      await flush();
+      const response = await t.session.handleRequest({ type: 'browser.grant.create', agentIds: ['33333333-3333-4333-8333-333333333333'], origins: ['https://shop.example.test'], capabilities: ['browser.read'], ttlSeconds: 3600 });
+      expect(response).toEqual({ ok: false, code: 'origin_permission_missing' });
+      expect(t.socket().methods()).not.toContain('browser.grant.create');
+      const restricted = await t.session.handleRequest({ type: 'browser.grant.create', agentIds: ['33333333-3333-4333-8333-333333333333'], origins: ['https://chromewebstore.google.com'], capabilities: ['browser.read'], ttlSeconds: 3600 });
+      expect(restricted).toEqual({ ok: false, code: 'invalid_origin' });
+    } finally {
+      api.hasHostPermission = async () => true;
+    }
+  });
+});

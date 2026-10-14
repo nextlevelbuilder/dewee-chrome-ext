@@ -44,6 +44,16 @@ pnpm zip:store    # .output-store/… without `key`, for the Chrome Web Store
 
 The Chrome Web Store rejects a manifest that carries `key` and assigns its own extension ID. Register that store ID's `chromiumapp.org` redirect URI and `chrome-extension://` origin next to the unpacked ones.
 
+### Connected browser end-to-end
+
+`tests/e2e/browser-control.spec.ts` needs no Dewee Gateway. Each test starts two loopback servers on random ports: `tests/e2e/support/browser-relay.ts` plays the Gateway (the `/ws` relay with `connect`, `browser.device.*`, `browser.grant.*` and the `browser.command` events, plus the small `/v1/extension` HTTP API the panel needs to sign in), and a page server serves a test shop page with a password field, a hidden input and a "Delete account" button. The person's side (enroll, allow, approve, Stop, revoke) runs through the real side panel; the relay sends commands and records acks, results and control states.
+
+```bash
+pnpm test:e2e -- tests/e2e/browser-control.spec.ts
+```
+
+Both servers close in `afterEach`. The relay's API key is a fixed test value, not a secret.
+
 ### Live end-to-end
 
 The `tests/e2e/live-*.spec.ts` specs drive the built extension against a real local Dewee Gateway: connect, agents, chat, stop, key revocation, reopening the panel, reconciling a lost response (`live-selfhosted`), stream resilience (`live-resilience`), credential cards and admin policy (`live-credentials`), and Cloud sign-in through a local Dewee app (`live-cloud`). Each is skipped unless its environment is set (shell or `.env`). The model is the deterministic stub `tests/e2e/support/stub-llm.mjs`; `tests/e2e/support/setup-live-gateway.mjs` creates the tenant, agents and personal key and writes them to `.env`. Steps: [tests/e2e/support/live-gateway.md](../tests/e2e/support/live-gateway.md).
