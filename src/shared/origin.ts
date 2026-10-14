@@ -27,6 +27,26 @@ export function checkOrigin(input: string): OriginCheck {
   return { ok: false, reason: 'invalid' };
 }
 
+/**
+ * True when a granted host permission pattern names exactly this origin's host: same scheme, the
+ * same host with no wildcard, any path, and either the same port or no port (Chrome then matches
+ * every port of that host). Wildcard hosts (Ask Dewee's all-HTTPS pattern) and `<all_urls>` never count.
+ */
+export function patternCoversExactHost(pattern: string, origin: string): boolean {
+  const match = /^(https?):\/\/([^/:*]+)(?::(\d+))?\/.*$/.exec(pattern);
+  if (!match) return false;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  const [, scheme, host, port] = match;
+  if (`${scheme}:` !== url.protocol || host?.toLowerCase() !== url.hostname.toLowerCase()) return false;
+  if (port === undefined) return true;
+  return port === (url.port || (url.protocol === 'https:' ? '443' : '80'));
+}
+
 /** Match pattern for `chrome.permissions` covering exactly one origin (any port must be kept). */
 export function originPermissionPattern(origin: string): string {
   const url = new URL(origin);

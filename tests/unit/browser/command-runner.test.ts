@@ -1,4 +1,4 @@
-import { CommandRunner, MAX_IN_FLIGHT, type RunnerDeps } from '@/browser/command-runner';
+import { CommandRunner, MAX_COMMAND_MS, MAX_IN_FLIGHT, type RunnerDeps } from '@/browser/command-runner';
 import { CommandError } from '@/browser/executor';
 import { DEVICE_ID, NOW, payload } from './fixtures';
 import { flush } from './fake-socket';
@@ -118,6 +118,23 @@ describe('CommandRunner', () => {
       const done = runner.handle(payload('wait', { tab: 't1', text: 'Done' }, { deadline: new Date(NOW + 2_000).toISOString() }));
       await flush();
       vi.advanceTimersByTime(2_000);
+      await done;
+      expect(results[0]).toMatchObject({ ok: false, error: { code: 'timeout' } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caps a far-off deadline at the local limit', async () => {
+    vi.useFakeTimers();
+    try {
+      const { runner, results } = setup((_command, signal) => untilAborted(signal));
+      const done = runner.handle(payload('wait', { tab: 't1', text: 'Done' }, { deadline: new Date(NOW + 365 * 86_400_000).toISOString() }));
+      await flush();
+      vi.advanceTimersByTime(MAX_COMMAND_MS - 1);
+      await flush();
+      expect(results).toEqual([]);
+      vi.advanceTimersByTime(1);
       await done;
       expect(results[0]).toMatchObject({ ok: false, error: { code: 'timeout' } });
     } finally {

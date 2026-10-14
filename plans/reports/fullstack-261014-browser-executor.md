@@ -60,13 +60,61 @@ Manifest unchanged: no `tabs` and no `debugger`; `https://*/*` stays optional; n
 7. `navigate` requires both the current page and the target URL to be in the grant.
 8. High-risk actions need approval only when a side panel is open to ask. With no panel open they are denied (`approval_denied`), never auto-approved.
 9. `screenshot` returns `unsupported_capability` (no advanced build).
+10. Grants are used only if this browser created them. The ids from its own `browser.grant.create` are remembered per profile in `storage.local`; any other grant from attach, list or events is ignored. A grant whose `device_id` is not this device, or with a non-exact origin, is ignored too, and a created grant whose origins differ from the request is refused (`invalid_response`). **The Gateway must return `device_id` on every Grant.** A grant created in another browser has to be created again here.
+11. `press Enter` needs the same "Allow once" as `type` with submit, naming the focused element.
+12. `open about:blank` is refused (`restricted_page`), like every other `about:` URL.
+13. The per-action host-permission check needs a permission for that exact host (`permissions.getAll`); Ask Dewee's `https://*/*` does not count.
+14. A command runs for at most 120 s locally, whatever its deadline.
+15. After an approval the element is described again; if it changed, the command fails with `stale_ref`.
+
+## Review fixes (second commit)
+
+An isolated review of 8d18be8 led to these changes:
+
+- Enter needs approval.
+- Redaction and the `type` refusal now also catch:
+  - revealed passwords (`autocomplete` current-password/new-password);
+  - PIN, OTP and verification-code names and ids;
+  - sensitive fields with any role.
+- Grants are trusted only if this browser created them, and the host permission must name the exact host.
+- The approval card shows a clipped preview of the text to be sent.
+- The element is re-described after approval.
+- Waiting for text re-checks the grant and Pause.
+- `open about:blank` is refused.
+- Command deadlines are capped locally.
+- A tab Chrome creates after its command was cancelled is closed.
+- Page injection waits for an awaited `storage.local` lock.
+- The at-most-once limit after a worker restart is documented.
+- The threat model and `api-contract.md` are updated to match.
 
 ## Test evidence
 
-All gates exited 0 (2026-10-14):
+After the review fixes, every gate exited 0 (2026-10-14):
 
-- `pnpm lint`: clean.
-- `pnpm typecheck`: clean.
+- `pnpm lint`, `pnpm typecheck` and `pnpm build`: clean.
+- `pnpm test`: 45 files and 669 tests passed.
+  - New tests cover:
+    - Enter approval;
+    - a changed element after approval;
+    - the preview;
+    - a click that lands off the grant;
+    - navigate refusals;
+    - open `about:blank`;
+    - a tab created after cancel;
+    - wait-text stopping on Pause or revoke;
+    - the deadline cap;
+    - grant trust (unknown id, other device, wildcard origin, mismatched create, kept across restart, cleared on device revoke);
+    - `patternCoversExactHost`;
+    - `hasHostPermission` through `getAll`;
+    - injection gated on the storage lock;
+    - redaction of revealed passwords, PINs, OTPs and role-overridden password inputs;
+    - same-origin frame inclusion and cross-origin exclusion;
+    - the `focused` op;
+    - web-page senders refused for `browser.*` in the worker routing.
+- `pnpm test:e2e` (browser-control and smoke): 15 of 15 passed. This adds a test for type-with-submit and Enter approvals, which checks the preview and that it is not stored.
+
+The first commit's gates, for reference:
+
 - `pnpm test`: 42 files, 632 tests passed. New suites cover protocol, policy, tabs, snapshot (redaction, hidden nodes, stale refs, max_chars, click/type reachability), transport (backoff, heartbeat, no replay, fatal stop), command runner (ack ordering, dedupe, cancel, deadline, outcome_unknown, busy), executor (open/redirect/close, policy, lease, approvals, sensitive fields), session (modes, enroll/attach, profile switch, revoke events, origin permission) and GrantForm origin parsing.
 - `pnpm build`: `.output/chrome-mv3`, 1.29 MB.
 - `pnpm test:e2e tests/e2e/browser-control.spec.ts tests/e2e/smoke.spec.ts`: 14 of 14 passed (7 browser-control, 7 smoke). The browser-control tests run against a loopback test relay and page server. They cover open/snapshot/type/click with redaction and no page data in storage, refusal of ungranted and restricted pages, a read-only grant, approve and deny plus denial with the panel closed, Stop/Resume, relay-side revoke during a command, and revoke from the panel.
@@ -83,6 +131,8 @@ Fixes made during the gates:
 ## Open risks
 
 - The high-risk name list is a heuristic. A destructive button with an unusual label will not ask for approval.
+- Sensitive-field detection is also a heuristic, and stopping the agent when the person uses the tab is best effort, since a page can stop the event first.
+- The Gateway being built in parallel must include `device_id` in every Grant object. Without it, no grant is usable.
 - Synthetic events are not trusted events, so some sites ignore them.
 - E2E coverage uses a handwritten relay, not the real Gateway. A live run against the Gateway being built in parallel is still pending.
 - Dewee Cloud mode is not supported yet; the panel says so.

@@ -4,7 +4,7 @@
  * revoked, Pause pressed or the tab navigated while a step was waiting). Results carry only what
  * the contract returns; page text, typed text and DOM are never logged or stored.
  */
-import { ApprovalBroker } from './approvals';
+import { approvalPreview, type ApprovalBroker, type ApprovalRequest } from './approvals';
 import type { BrowserApi } from './chrome-api';
 import { isHighRiskName, isRestrictedUrl, LocalGuard, urlOrigin, type ControlState, type GuardResult } from './policy';
 import { SNAPSHOT_DEFAULT_CHARS, type ActionResult, type BrowserCommand, type BrowserErrorCode, type Grant } from './protocol';
@@ -75,6 +75,13 @@ function pageError(response: PageResponse): never {
   throw new CommandError(response.ok ? 'internal' : response.code === 'internal' ? 'internal' : response.code);
 }
 
+type Described = Extract<PageResponse, { op: 'describe' }>;
+
+/** The element still looks the way it did when the person was asked. */
+function sameTarget(before: Described, after: Described): boolean {
+  return before.role === after.role && before.name === after.name && before.sensitive === after.sensitive && before.editable === after.editable;
+}
+
 function hostOf(url: string | undefined): string {
   try {
     return url ? new URL(url).host : '';
@@ -121,25 +128,28 @@ export class Executor {
     if (command.action === 'open') {
       activity.domain = hostOf(command.params.url);
       this.deps.onActivity(activity, true);
-      ensure(await guard.checkUrl(command.params.url, grant, true));
+      ensure(await guard.checkUrl(command.params.url, grant));
       this.recheck(command, signal);
       context.sideEffect = true;
       const tabId = await this.deps.api.createTab(command.params.url);
+      if (signal.aborted) {
+        // Cancelled while Chrome created the tab (Stop, revoke, a profile switch): never hand it to the agent.
+        await this.deps.api.removeTab(tabId).catch(() => undefined);
+        throw new CommandError('cancelled');
+      }
       const owned = tabs.add(tabId, grant.grant_id, command.agent_id);
       this.deps.onTabsChanged();
       await this.waitForLoad(tabId, signal, this.remaining(command, LOAD_TIMEOUT_MS));
       const info = await this.tabInfo(tabId);
-      if (info.url !== 'about:blank') {
-        const landed = await guard.checkUrl(info.url, grant);
-        if (!landed.ok) {
-          // A redirect left the grant: close the tab this command opened instead of leaving it to the agent.
-          await this.deps.api.removeTab(tabId).catch(() => undefined);
-          tabs.markClosed(tabId);
-          this.deps.onTabsChanged();
-          throw new CommandError(landed.code, landed.message);
-        }
-        await this.watch(tabId, grant);
+      const landed = await guard.checkUrl(info.url, grant);
+      if (!landed.ok) {
+        // A redirect left the grant: close the tab this command opened instead of leaving it to the agent.
+        await this.deps.api.removeTab(tabId).catch(() => undefined);
+        tabs.markClosed(tabId);
+        this.deps.onTabsChanged();
+        throw new CommandError(landed.code, landed.message);
       }
+      await this.watch(tabId, grant);
       return { tab: owned.handle, url: info.url ?? '', title: info.title ?? '' };
     }
 
@@ -199,11 +209,10 @@ export class Executor {
         }
         const submit = command.action === 'type' && command.params.submit === true;
         if (submit || isHighRiskName(described.name)) {
-          const approved = await this.deps.approvals.request(
-            { agentName: command.agent_name ?? '', channel: command.channel ?? '', action: command.action, domain: hostOf((await api.getTab(tab.tabId))?.url), target: described.name, submit },
-            signal,
-          );
-          if (!approved) throw new CommandError('approval_denied', 'The person did not approve this action');
+          await this.approve(command, tab, signal, { action: command.action, target: described.name, submit, preview: submit && command.action === 'type' ? approvalPreview(command.params.text) : undefined });
+          // The page may have changed while the person decided: act only on the element they approved.
+          const again = await this.page(tab.tabId, { op: 'describe', origins, generation, ref });
+          if (again.op !== 'describe' || !sameTarget(described, again)) throw new CommandError('stale_ref', 'The element changed while waiting for approval');
         }
         this.recheck(command, signal);
         ensure(await guard.checkTab(tab.handle, grant, true));
@@ -217,6 +226,15 @@ export class Executor {
       }
       case 'press': {
         await this.watch(tab.tabId, grant);
+        if (command.params.key === 'Enter') {
+          // Enter submits forms and sends messages in chat boxes: the same confirmation as `type` with submit.
+          const focused = await this.page(tab.tabId, { op: 'focused', origins });
+          if (focused.op !== 'describe') pageError(focused);
+          await this.approve(command, tab, signal, { action: 'press', target: focused.name, submit: true });
+          const again = await this.page(tab.tabId, { op: 'focused', origins });
+          if (again.op !== 'describe' || !sameTarget(focused, again)) throw new CommandError('stale_ref', 'The focused element changed while waiting for approval');
+          ensure(await guard.checkTab(tab.handle, grant, true));
+        }
         this.recheck(command, signal);
         context.sideEffect = true;
         await this.page(tab.tabId, { op: 'press', origins, key: command.params.key });
@@ -237,6 +255,8 @@ export class Executor {
           if (found.op === 'findText' && found.found) return { tab: tab.handle };
           if (this.now() >= until) throw new CommandError('timeout', 'The text did not appear in time');
           await this.sleep(250, signal);
+          // The grant can expire or be revoked, or Pause pressed, while waiting.
+          this.recheck(command, signal);
           ensure(await guard.checkTab(tab.handle, grant, true));
         }
       }
@@ -251,6 +271,13 @@ export class Executor {
       case 'screenshot':
         throw new CommandError('unsupported_capability', 'Screenshots need the advanced build');
     }
+  }
+
+  /** Waits for the person's "Allow once"; anything else (deny, no panel, panel closed, cancel) refuses. */
+  private async approve(command: BrowserCommand, tab: OwnedTab, signal: AbortSignal, details: Pick<ApprovalRequest, 'action' | 'target' | 'submit' | 'preview'>): Promise<void> {
+    const domain = hostOf((await this.deps.api.getTab(tab.tabId))?.url);
+    const approved = await this.deps.approvals.request({ agentName: command.agent_name ?? '', channel: command.channel ?? '', domain, ...details }, signal);
+    if (!approved) throw new CommandError('approval_denied', 'The person did not approve this action');
   }
 
   private async listTabs(grant: Grant): Promise<ActionResult['tabs']> {

@@ -33,9 +33,7 @@ describe('isRestrictedUrl', () => {
     expect(isRestrictedUrl(url)).toBe(true);
   });
 
-  it('allows about:blank only while opening a tab, and ordinary sites', () => {
-    expect(isRestrictedUrl('about:blank', true)).toBe(false);
-    expect(isRestrictedUrl('about:srcdoc', true)).toBe(true);
+  it('allows ordinary sites', () => {
     expect(isRestrictedUrl('https://example.com/a')).toBe(false);
     expect(isRestrictedUrl('https://chrome.google.com/search')).toBe(false);
   });
@@ -102,7 +100,6 @@ describe('LocalGuard.checkUrl', () => {
     const { guard } = setup();
     expect(await guard.checkUrl('chrome://settings', grant({ origins: ['chrome://settings'] }))).toMatchObject({ ok: false, code: 'restricted_page' });
     expect(await guard.checkUrl('about:blank', grant())).toMatchObject({ ok: false, code: 'restricted_page' });
-    expect(await guard.checkUrl('about:blank', grant(), true)).toEqual({ ok: true });
   });
 
   it('refuses when Chrome has no host permission for the origin', async () => {

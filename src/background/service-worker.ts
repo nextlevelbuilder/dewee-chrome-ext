@@ -53,6 +53,24 @@ async function handle(message: unknown, sender: chrome.runtime.MessageSender): P
   }
 }
 
+/**
+ * Routes one `runtime.onMessage` message. A web page's content script may only send `ask.selection`
+ * or the owned-tab input notice; it never reaches the auth or `browser.*` handlers. Returns true
+ * when `sendResponse` will be called later.
+ */
+export function onRuntimeMessage(message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response: BackgroundResponse) => void): boolean {
+  if (isFromWebPage(sender)) {
+    if (userInputSchema.safeParse(message).success) {
+      if (sender.tab.id !== undefined) browserSession.onUserInput(sender.tab.id);
+    } else {
+      handleAskSelection(message, sender);
+    }
+    return false;
+  }
+  void handle(message, sender).then(sendResponse);
+  return true;
+}
+
 export function startServiceWorker(): void {
   // Open the side panel when the toolbar icon is clicked (a user gesture). Nothing runs in web pages unless
   // the person turns on "Ask Dewee" for selected text, or grants an agent a site under "Connected browser".
@@ -60,19 +78,7 @@ export function startServiceWorker(): void {
   // Remembered credentials live in `storage.local`; keep it out of reach of the opt-in page scripts.
   void lockLocalStorage();
 
-  browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // A web page's content script may only send `ask.selection` or the owned-tab input notice; it never reaches the auth handlers.
-    if (isFromWebPage(sender)) {
-      if (userInputSchema.safeParse(message).success) {
-        if (sender.tab.id !== undefined) browserSession.onUserInput(sender.tab.id);
-      } else {
-        handleAskSelection(message, sender);
-      }
-      return false;
-    }
-    void handle(message, sender).then(sendResponse);
-    return true;
-  });
+  browser.runtime.onMessage.addListener((message, sender, sendResponse) => onRuntimeMessage(message, sender, sendResponse));
 
   // The side panel follows browser control state over a port; only this extension's pages may connect.
   browser.runtime.onConnect.addListener((port) => {

@@ -1,9 +1,9 @@
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { writeCredential } from '@/auth/credential-store';
 import type { BrowserApi } from '@/browser/chrome-api';
-import { BrowserSession, deviceKey } from '@/browser/session';
+import { BrowserSession, deviceKey, grantsKey } from '@/browser/session';
 import { defaultSettings, saveSettings, type Profile, type Settings } from '@/shared/settings';
-import { DEVICE_ID, grant, GRANT_ID, NOW } from './fixtures';
+import { AGENT_ID, DEVICE_ID, grant, GRANT_ID, NOW, ORIGIN } from './fixtures';
 import { FakeSocket, flush } from './fake-socket';
 
 const gw: Profile = { id: 'p_gw', name: 'Gateway', kind: 'gateway', origin: 'https://gw.example.test', remember: false };
@@ -23,6 +23,11 @@ const api: BrowserApi = {
   run: async () => ({ ok: false, code: 'internal' }),
   hasHostPermission: async () => true,
 };
+
+/** A device enrolled earlier in this browser, with the grant ids it created. */
+async function enrolledHere(grantIds: string[] = [GRANT_ID]): Promise<void> {
+  await fakeBrowser.storage.local.set({ [deviceKey(gw.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' }, [grantsKey(gw.id)]: grantIds });
+}
 
 function setup() {
   const sockets: FakeSocket[] = [];
@@ -99,10 +104,11 @@ describe('BrowserSession', () => {
     expect(t.socket().last('browser.device.enroll').params).toEqual({ name: 'Work laptop', platform: expect.any(String), capabilities: ['standard'] });
     t.socket().reply(t.socket().last('browser.device.enroll'), { device_id: DEVICE_ID });
     await flush();
+    // A grant this browser never created is not used, whatever the Gateway says.
     t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
     await expect(enrolled).resolves.toEqual({ ok: true });
     expect((await fakeBrowser.storage.local.get(deviceKey(gw.id)))[deviceKey(gw.id)]).toEqual({ device_id: DEVICE_ID, name: 'Work laptop' });
-    expect(t.session.state()).toMatchObject({ device: { device_id: DEVICE_ID }, grants: [{ grant_id: GRANT_ID }] });
+    expect(t.session.state()).toMatchObject({ device: { device_id: DEVICE_ID }, grants: [] });
   });
 
   it('re-attaches the stored device after a reconnect and never replays requests', async () => {
@@ -130,7 +136,7 @@ describe('BrowserSession', () => {
   });
 
   it('closes the socket and forgets grants on a profile switch', async () => {
-    await fakeBrowser.storage.local.set({ [deviceKey(gw.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' } });
+    await enrolledHere();
     await saveSettings(settings(gw.id));
     const t = setup();
     await t.session.sync();
@@ -161,15 +167,101 @@ describe('BrowserSession', () => {
   });
 
   it('drops a grant the gateway revoked', async () => {
-    await fakeBrowser.storage.local.set({ [deviceKey(gw.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' } });
+    await enrolledHere();
     await saveSettings(settings(gw.id));
     const t = setup();
     await t.session.sync();
     await t.connect();
     t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
     await flush();
+    expect(t.session.state().grants).toHaveLength(1);
     t.socket().event('browser.grant.revoked', { grant_id: GRANT_ID });
     expect(t.session.state().grants).toEqual([]);
+    await flush();
+    expect((await fakeBrowser.storage.local.get(grantsKey(gw.id)))[grantsKey(gw.id)]).toEqual([]);
+  });
+
+  it('uses only grants created in this browser, for this device, over exact origins', async () => {
+    const other = '66666666-6666-4666-8666-666666666666';
+    const wildcard = '77777777-7777-4777-8777-777777777777';
+    const foreign = '88888888-8888-4888-8888-888888888888';
+    await enrolledHere([GRANT_ID, other, wildcard]);
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), {
+      device_id: DEVICE_ID,
+      grants: [
+        grant(),
+        grant({ grant_id: other, device_id: '99999999-9999-4999-8999-999999999999' }),
+        grant({ grant_id: wildcard, origins: ['https://*.example.test'] }),
+        grant({ grant_id: foreign }),
+      ],
+    });
+    await flush();
+    expect(t.session.state().grants.map((g) => g.grant_id)).toEqual([GRANT_ID]);
+
+    // A refresh from the Gateway cannot add a grant either.
+    void t.session.handleRequest({ type: 'browser.grant.refresh' });
+    await flush();
+    t.socket().reply(t.socket().last('browser.grant.list'), { grants: [grant({ grant_id: foreign }), grant({ grant_id: other, device_id: null })] });
+    await flush();
+    expect(t.session.state().grants).toEqual([]);
+  });
+
+  it('remembers a grant it created and keeps it across a reconnect', async () => {
+    await enrolledHere([]);
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    const created = t.session.handleRequest({ type: 'browser.grant.create', agentIds: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read'], ttlSeconds: 3600 });
+    await flush();
+    t.socket().reply(t.socket().last('browser.grant.create'), { grant: grant() });
+    await expect(created).resolves.toEqual({ ok: true });
+    expect((await fakeBrowser.storage.local.get(grantsKey(gw.id)))[grantsKey(gw.id)]).toEqual([GRANT_ID]);
+
+    // A fresh session (worker restart) honours it on attach.
+    const restarted = setup();
+    await restarted.session.sync();
+    await restarted.connect();
+    restarted.socket().reply(restarted.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+    await flush();
+    expect(restarted.session.state().grants.map((g) => g.grant_id)).toEqual([GRANT_ID]);
+  });
+
+  it('refuses a created grant that does not match the request', async () => {
+    await enrolledHere([]);
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    const created = t.session.handleRequest({ type: 'browser.grant.create', agentIds: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read'], ttlSeconds: 3600 });
+    await flush();
+    t.socket().reply(t.socket().last('browser.grant.create'), { grant: grant({ origins: [ORIGIN, 'https://bank.example.test'] }) });
+    await expect(created).resolves.toEqual({ ok: false, code: 'invalid_response' });
+    expect(t.session.state().grants).toEqual([]);
+    expect((await fakeBrowser.storage.local.get(grantsKey(gw.id)))[grantsKey(gw.id)]).toEqual([]);
+  });
+
+  it('forgets the device and its grant ids when the device is revoked', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+    await flush();
+    t.socket().event('browser.device.revoked', { device_id: DEVICE_ID });
+    await flush();
+    expect(t.session.state()).toMatchObject({ device: null, grants: [] });
+    const stored = await fakeBrowser.storage.local.get([deviceKey(gw.id), grantsKey(gw.id)]);
+    expect(stored).toEqual({});
   });
 
   it('refuses a grant for a site Chrome has no access to', async () => {

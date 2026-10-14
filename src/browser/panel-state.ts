@@ -19,7 +19,16 @@ export const panelStateSchema = z.object({
   control: z.enum(['active', 'paused', 'stopped']),
   activity: z.object({ agentName: z.string(), channel: z.string(), domain: z.string(), action: z.string() }).nullable(),
   approvals: z.array(
-    z.object({ id: z.string(), agentName: z.string(), channel: z.string(), action: z.enum(['click', 'type']), domain: z.string(), target: z.string(), submit: z.boolean() }),
+    z.object({
+      id: z.string(),
+      agentName: z.string(),
+      channel: z.string(),
+      action: z.enum(['click', 'type', 'press']),
+      domain: z.string(),
+      target: z.string(),
+      submit: z.boolean(),
+      preview: z.string().max(200).optional(),
+    }),
   ),
 });
 export type PanelState = z.infer<typeof panelStateSchema>;

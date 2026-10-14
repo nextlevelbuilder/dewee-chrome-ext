@@ -43,9 +43,14 @@ export function ApprovalCards({ approvals, call }: { approvals: PanelState['appr
             <h3>{t('browser.approval.title')}</h3>
           </div>
           <p className="action-card-body">
-            {t(approval.action === 'type' ? 'browser.approval.type' : 'browser.approval.click', { agent: approval.agentName, target: approval.target, domain: approval.domain })}
+            {t(`browser.approval.${approval.action}`, { agent: approval.agentName, target: approval.target || t('browser.approval.unnamed'), domain: approval.domain })}
             {approval.channel ? ` ${t('browser.approval.via', { channel: approval.channel })}` : ''}
           </p>
+          {approval.preview !== undefined ? (
+            <blockquote className="browser-approval-preview small" data-testid="browser-approval-preview">
+              <span className="muted">{t('browser.approval.preview')}</span> {approval.preview || t('browser.approval.previewEmpty')}
+            </blockquote>
+          ) : null}
           <p className="muted small">{t('browser.approval.hint')}</p>
           <div className="card-actions">
             <button type="button" className="btn btn-primary small" onClick={() => void call({ type: 'browser.approval', id: approval.id, approve: true })}>

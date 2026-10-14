@@ -1,11 +1,12 @@
 /**
  * The Chrome calls the executor makes, behind one small interface so the executor can be tested
  * without a browser. Only `chrome.tabs`, `chrome.scripting` (with the bundled `pageRun`) and
- * `permissions.contains` are used: no `tabs` permission (URL and title are visible for origins
+ * `permissions.getAll` are used: no `tabs` permission (URL and title are visible for origins
  * the person granted), no `debugger`, no code strings.
  */
 import { browser } from 'wxt/browser';
-import { originPermissionPattern } from '@/shared/origin';
+import { lockLocalStorage } from '@/background/ask-selection';
+import { patternCoversExactHost } from '@/shared/origin';
 import { pageRun, type PageRequest, type PageResponse } from './snapshot';
 
 export interface TabInfo {
@@ -46,6 +47,8 @@ export const chromeBrowserApi: BrowserApi = {
     }
   },
   async run(tabId, request) {
+    // The page function runs in a content-script world: `storage.local` must be closed to it first.
+    if (!(await lockLocalStorage())) return { ok: false, code: 'internal' };
     try {
       const [frame] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, func: pageRun, args: [request] });
       return (frame?.result as PageResponse | undefined) ?? { ok: false, code: 'internal' };
@@ -56,7 +59,10 @@ export const chromeBrowserApi: BrowserApi = {
   },
   async hasHostPermission(origin) {
     try {
-      return await browser.permissions.contains({ origins: [originPermissionPattern(origin)] });
+      // Not `permissions.contains`: a broad grant held for another feature (Ask Dewee's `https://*/*`)
+      // would satisfy it. Connected browser needs site access granted for this exact host.
+      const { origins = [] } = await browser.permissions.getAll();
+      return origins.some((pattern) => patternCoversExactHost(pattern, origin));
     } catch {
       return false;
     }

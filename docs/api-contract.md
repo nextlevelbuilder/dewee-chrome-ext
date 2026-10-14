@@ -193,9 +193,11 @@ Self-hosted only, and only while the person turns on "Connected browser" in Sett
 
 What the extension adds on its side of the contract:
 
-- Every command is checked again locally before it runs: grant present, not expired or revoked, agent in the grant, capability, exact origin of both the tab's current page and any requested URL, restricted pages, owned tab, Chrome host permission, and local Pause/Stop.
-- `ack` is sent after validation and before any work; exactly one `browser.command.result` follows. A command id is never executed twice. Results are not queued across a reconnect; commands in flight when the socket drops are cancelled locally, and the Gateway's deadline rules apply.
-- `type` is refused (`sensitive_field`) for password, payment-card and one-time-code fields. `screenshot` answers `unsupported_capability` (no advanced build yet).
+- Only grants created from this browser are used. The extension remembers the `grant_id` returned by its own `browser.grant.create`; grants from `attach`, `browser.grant.list` or events with any other id, with a `device_id` other than this device's, or with an origin that is not an exact `scheme://host[:port]`, are ignored. A created grant whose origins differ from the request is refused (`invalid_response`). The Gateway must therefore return `device_id` on every Grant.
+- Every command is checked again locally before it runs: grant present, not expired or revoked, agent in the grant, capability, exact origin of both the tab's current page and any requested URL, restricted pages (every `about:` page included, so `open about:blank` is refused), owned tab, Chrome host permission for that exact host, and local Pause/Stop.
+- `ack` is sent after validation and before any work; exactly one `browser.command.result` follows. A command id is never executed twice while the service worker lives; after a worker restart this relies on the Gateway not resending a dispatched command. Results are not queued across a reconnect; commands in flight when the socket drops are cancelled locally, and the Gateway's deadline rules apply. A command runs for at most 120 s locally, whatever its deadline.
+- `type` with `submit`, `press` with `Enter`, and clicks on high-risk elements wait for the person's "Allow once" in the side panel and fail with `approval_denied` otherwise; if the element changed while the person decided, they fail with `stale_ref`.
+- `type` is refused (`sensitive_field`) for password, PIN, payment-card and one-time-code fields, detected by input type, `autocomplete` (`cc-*`, `one-time-code`, `current-password`, `new-password`) and name/id hints; the snapshot redacts their values. `screenshot` answers `unsupported_capability` (no advanced build yet).
 - Grants and devices are read by `grant_id` / `device_id`, also accepting `id`, since v1 does not pin the object shape beyond those fields.
 - Dewee Cloud: not available yet; the panel says so and no socket is opened.
 

@@ -7,12 +7,27 @@ export interface ApprovalRequest {
   id: string;
   agentName: string;
   channel: string;
-  action: 'click' | 'type';
+  /** `press` is Enter, which can submit what is focused. */
+  action: 'click' | 'type' | 'press';
   domain: string;
   /** Accessible name of the target element, shown as plain text. */
   target: string;
-  /** `type` with `submit: true`. */
+  /** `type` with `submit: true`, or Enter. */
   submit: boolean;
+  /**
+   * Start of the text `type` will enter and submit, so the person sees what would be sent. It
+   * lives only in this request and the panel state; it is never stored or logged. Never set for
+   * sensitive fields, which are refused before any approval.
+   */
+  preview?: string;
+}
+
+/** Longest typed-text preview shown on an approval card. */
+export const APPROVAL_PREVIEW_MAX = 160;
+
+export function approvalPreview(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > APPROVAL_PREVIEW_MAX ? `${flat.slice(0, APPROVAL_PREVIEW_MAX - 1)}…` : flat;
 }
 
 interface Waiting {

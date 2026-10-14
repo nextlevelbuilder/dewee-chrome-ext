@@ -4,11 +4,17 @@
  * before is never executed again, so a duplicate event cannot repeat a side effect. Cancellation,
  * Pause/Stop, revocation and the deadline abort the running command; if it may already have had
  * an effect the result is `outcome_unknown`, and the agent has to snapshot again.
+ *
+ * At-most-once holds only while this worker lives: the seen ids are kept in memory. After the
+ * service worker restarts, not running a command twice relies on the Gateway, which does not
+ * resend a command it already dispatched (it reports `outcome_unknown` or `timeout` instead).
  */
 import { CommandError, type ExecutionContext } from './executor';
 import { actionResultSchemas, parseCommand, type BrowserCommand, type BrowserErrorCode, type MethodParams } from './protocol';
 
 export const MAX_IN_FLIGHT = 8;
+/** Longest a single command may run here, whatever deadline it carries (also keeps `setTimeout` in range). */
+export const MAX_COMMAND_MS = 120_000;
 const MAX_SEEN = 1_000;
 
 export interface RunnerDeps {
@@ -68,7 +74,7 @@ export class CommandRunner {
     this.running.set(command.command_id, { command, controller, context });
     // The ack frame is written before any work starts.
     void this.deps.ack({ command_id: command.command_id }).catch(() => undefined);
-    const timer = setTimeout(() => controller.abort(new CommandError('timeout')), deadline - this.now());
+    const timer = setTimeout(() => controller.abort(new CommandError('timeout')), Math.min(deadline - this.now(), MAX_COMMAND_MS));
     try {
       const result = await this.deps.execute(command, controller.signal, context);
       if (controller.signal.aborted) throw controller.signal.reason;

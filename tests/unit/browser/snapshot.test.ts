@@ -155,6 +155,85 @@ describe('actions on refs', () => {
   });
 });
 
+describe('sensitive fields', () => {
+  beforeEach(() => {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      `
+      <input id="shown" type="text" autocomplete="current-password" aria-label="Shown password" value="shown-secret">
+      <input id="fresh" type="text" autocomplete="new-password" aria-label="New password" value="fresh-secret">
+      <input name="otp" aria-label="Code" value="135790">
+      <input id="userPin" aria-label="Your PIN" value="9876">
+      <input name="verification_code" aria-label="Verify" value="424242">
+      <input type="password" role="button" aria-label="Secret button" value="role-secret">
+      <input name="shipping_address" aria-label="Shipping" value="1 Main St">
+    `,
+    );
+  });
+
+  const run = (request: { op: 'describe' | 'type'; ref: string }) =>
+    pageRun(request.op === 'type' ? { op: 'type', origins: origins(), generation: 1, ref: request.ref, text: 'guess', submit: false } : { op: 'describe', origins: origins(), generation: 1, ref: request.ref });
+
+  it('redacts revealed passwords, PINs and one-time codes, whatever role the page gives them', () => {
+    const text = snapshot();
+    for (const secret of ['shown-secret', 'fresh-secret', '135790', '9876', '424242', 'role-secret']) expect(text).not.toContain(secret);
+    expect(text).toMatch(/textbox "Shown password" value=\[redacted\]/);
+    expect(text).toMatch(/textbox "Code" value=\[redacted\]/);
+    expect(text).toMatch(/textbox "Your PIN" value=\[redacted\]/);
+    expect(text).toMatch(/button "Secret button" type=password value=\[redacted\]/);
+    // A word merely containing "pin" is not a PIN.
+    expect(text).toContain('textbox "Shipping" value="1 Main St"');
+  });
+
+  it('refuses to type into any of them', () => {
+    const text = snapshot();
+    for (const name of ['Shown password', 'New password', 'Code', 'Your PIN', 'Verify', 'Secret button']) {
+      const ref = refOf(text, name);
+      expect(run({ op: 'describe', ref })).toMatchObject({ ok: true, sensitive: true });
+      expect(run({ op: 'type', ref })).toEqual({ ok: false, code: 'sensitive_field' });
+    }
+    expect((document.getElementById('shown') as HTMLInputElement).value).toBe('shown-secret');
+  });
+});
+
+describe('frames', () => {
+  /** jsdom has no real cross-document origins: the frame's document is stood in for with its origin. */
+  function frameWith(origin: string, html: string) {
+    const inner = document.implementation.createHTMLDocument('');
+    inner.body.innerHTML = html;
+    const frame = document.createElement('iframe');
+    frame.title = 'Embedded';
+    Object.defineProperty(frame, 'contentDocument', { get: () => ({ body: inner.body, location: { origin } }) });
+    document.body.append(frame);
+  }
+
+  it('includes a same-origin frame the grant covers', () => {
+    frameWith(location.origin, '<button>Inside frame</button>');
+    const text = snapshot();
+    expect(text).toContain('frame "Embedded"');
+    expect(text).toMatch(/\[e\d+\] button "Inside frame"/);
+  });
+
+  it('leaves out a frame from an origin outside the grant', () => {
+    frameWith('https://ads.example.test', '<button>Ad button</button>');
+    const text = snapshot();
+    expect(text).not.toContain('Embedded');
+    expect(text).not.toContain('Ad button');
+  });
+});
+
+describe('focused', () => {
+  it('describes the focused element, or the page when nothing has focus', () => {
+    (document.getElementById('email') as HTMLInputElement).focus();
+    expect(pageRun({ op: 'focused', origins: origins() })).toEqual({ ok: true, op: 'describe', role: 'textbox', name: 'Email', sensitive: false, editable: true });
+    (document.getElementById('pw') as HTMLInputElement).focus();
+    expect(pageRun({ op: 'focused', origins: origins() })).toMatchObject({ name: 'Password', sensitive: true });
+    (document.activeElement as HTMLElement).blur();
+    expect(pageRun({ op: 'focused', origins: origins() })).toMatchObject({ ok: true, op: 'describe', name: '' });
+    expect(pageRun({ op: 'focused', origins: ['https://other.example.test'] })).toEqual({ ok: false, code: 'origin_not_granted' });
+  });
+});
+
 describe('findText', () => {
   it('looks for text in the page', () => {
     expect(pageRun({ op: 'findText', origins: origins(), text: 'Plain paragraph' })).toEqual({ ok: true, op: 'findText', found: true });

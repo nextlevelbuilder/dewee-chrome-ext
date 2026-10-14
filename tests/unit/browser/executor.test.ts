@@ -44,6 +44,7 @@ function setup(options: { grant?: Grant; page?: (request: PageRequest) => PageRe
       pageCalls.push(request);
       if (options.page) return options.page(request);
       if (request.op === 'describe') return { ok: true, op: 'describe', role: 'button', name: 'Next', sensitive: false, editable: false } as const;
+      if (request.op === 'focused') return { ok: true, op: 'describe', role: 'textbox', name: 'Message', sensitive: false, editable: true } as const;
       if (request.op === 'snapshot') return { ok: true, op: 'snapshot', text: '[e1] button "Next"', url: `${ORIGIN}/`, title: 'Shop' } as const;
       if (request.op === 'findText') return { ok: true, op: 'findText', found: true } as const;
       return { ok: true, op: request.op } as PageResponse;
@@ -101,6 +102,19 @@ function setup(options: { grant?: Grant; page?: (request: PageRequest) => PageRe
 }
 
 const opsOf = (calls: PageRequest[]) => calls.map((c) => c.op);
+
+type Description = { role: string; name: string; sensitive?: boolean; editable?: boolean };
+
+/** A page whose `describe` (and `focused`) answers come from `next()`, called once per lookup. */
+function describing(next: () => Description): (request: PageRequest) => PageResponse {
+  return (request) => {
+    if (request.op === 'describe' || request.op === 'focused') {
+      const d = next();
+      return { ok: true, op: 'describe', role: d.role, name: d.name, sensitive: d.sensitive ?? false, editable: d.editable ?? false };
+    }
+    return { ok: true, op: request.op } as PageResponse;
+  };
+}
 
 describe('Executor: open', () => {
   it('opens a granted site in a new owned tab', async () => {
@@ -261,6 +275,174 @@ describe('Executor: click and type', () => {
     const run = t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 }), controller.signal);
     await expect(run.promise).rejects.toMatchObject({ code: 'cancelled' });
     expect(run.context.sideEffect).toBe(false);
+  });
+});
+
+describe('Executor: approvals', () => {
+  it('asks before Enter, naming the focused element', async () => {
+    const t = setup();
+    t.ownTab();
+    // No side panel: refused, nothing pressed.
+    await expect(t.run(command('press', { tab: 't1', key: 'Enter' })).promise).rejects.toMatchObject({ code: 'approval_denied' });
+    expect(opsOf(t.pageCalls)).not.toContain('press');
+
+    t.approvals.panelOpened();
+    const denied = t.run(command('press', { tab: 't1', key: 'Enter' }));
+    await flush();
+    expect(t.approvals.pending).toMatchObject([{ action: 'press', target: 'Message', submit: true, domain: 'shop.example.test' }]);
+    t.approvals.answer(pendingId(t.approvals), false);
+    await expect(denied.promise).rejects.toMatchObject({ code: 'approval_denied' });
+    expect(opsOf(t.pageCalls)).not.toContain('press');
+
+    const approved = t.run(command('press', { tab: 't1', key: 'Enter' }));
+    await flush();
+    t.approvals.answer(pendingId(t.approvals), true);
+    await expect(approved.promise).resolves.toEqual({ tab: 't1' });
+    expect(opsOf(t.pageCalls)).toContain('press');
+  });
+
+  it('presses other keys without asking', async () => {
+    const t = setup();
+    t.ownTab();
+    await expect(t.run(command('press', { tab: 't1', key: 'Tab' })).promise).resolves.toEqual({ tab: 't1' });
+    expect(opsOf(t.pageCalls)).toEqual(['watch', 'press']);
+  });
+
+  it('refuses Enter when focus moved while the person decided', async () => {
+    const names = ['Search', 'Send payment'];
+    const t = setup({ page: describing(() => ({ role: 'textbox', name: names.shift() ?? 'Send payment', editable: true })) });
+    t.ownTab();
+    t.approvals.panelOpened();
+    const run = t.run(command('press', { tab: 't1', key: 'Enter' }));
+    await flush();
+    t.approvals.answer(pendingId(t.approvals), true);
+    await expect(run.promise).rejects.toMatchObject({ code: 'stale_ref' });
+    expect(opsOf(t.pageCalls)).not.toContain('press');
+  });
+
+  it('refuses a click when the element changed while the person decided', async () => {
+    const names = ['Delete draft', 'Delete account'];
+    const t = setup({ page: describing(() => ({ role: 'button', name: names.shift() ?? 'Delete account' })) });
+    t.ownTab();
+    t.approvals.panelOpened();
+    const run = t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 }));
+    await flush();
+    t.approvals.answer(pendingId(t.approvals), true);
+    await expect(run.promise).rejects.toMatchObject({ code: 'stale_ref' });
+    expect(opsOf(t.pageCalls)).not.toContain('click');
+  });
+
+  it('shows a clipped preview of the text it would type and submit', async () => {
+    const t = setup({ page: describing(() => ({ role: 'textbox', name: 'Message', editable: true })) });
+    t.ownTab();
+    t.approvals.panelOpened();
+    const text = `Hello\n\n  there ${'x'.repeat(400)}`;
+    const run = t.run(command('type', { tab: 't1', ref: 'e2', generation: 1, text, submit: true }));
+    await flush();
+    const [pending] = t.approvals.pending;
+    expect(pending).toMatchObject({ action: 'type', target: 'Message', submit: true });
+    expect(pending?.preview?.startsWith('Hello there x')).toBe(true);
+    expect(pending?.preview?.length).toBe(160);
+    t.approvals.answer(pendingId(t.approvals), true);
+    await expect(run.promise).resolves.toMatchObject({ tab: 't1' });
+    expect(t.pageCalls.find((c) => c.op === 'type')).toMatchObject({ text, submit: true });
+  });
+
+  it('gives no preview for a high-risk click', async () => {
+    const t = setup({ page: describing(() => ({ role: 'button', name: 'Pay now' })) });
+    t.ownTab();
+    t.approvals.panelOpened();
+    const run = t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 }));
+    await flush();
+    expect(t.approvals.pending[0]?.preview).toBeUndefined();
+    t.approvals.answer(pendingId(t.approvals), false);
+    await expect(run.promise).rejects.toMatchObject({ code: 'approval_denied' });
+  });
+});
+
+describe('Executor: leaving the grant', () => {
+  it('reports origin_not_granted when a click lands on another site', async () => {
+    const t = setup();
+    t.ownTab();
+    const run = vi.mocked(t.api.run);
+    const original = run.getMockImplementation();
+    if (!original) throw new Error('the fake page has no implementation');
+    run.mockImplementation(async (tabId, request) => {
+      if (request.op === 'click') {
+        const tab = t.browserTabs.get(7);
+        if (tab) tab.url = 'https://elsewhere.example.test/';
+      }
+      return original(tabId, request);
+    });
+    const click = t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 }));
+    await expect(click.promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+    expect(click.context.sideEffect).toBe(true);
+  });
+
+  it('refuses to navigate outside the grant, to restricted pages, or from a page that left the grant', async () => {
+    const t = setup();
+    t.ownTab();
+    await expect(t.run(command('navigate', { tab: 't1', url: 'https://evil.example.test/' })).promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+    await expect(t.run(command('navigate', { tab: 't1', url: 'chrome://settings' })).promise).rejects.toMatchObject({ code: 'restricted_page' });
+    expect(t.api.updateTab).not.toHaveBeenCalled();
+    const shown = t.browserTabs.get(7);
+    if (shown) shown.url = 'https://elsewhere.example.test/';
+    await expect(t.run(command('navigate', { tab: 't1', url: `${ORIGIN}/` })).promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+    expect(t.api.updateTab).not.toHaveBeenCalled();
+  });
+
+  it('navigates within the grant', async () => {
+    const t = setup();
+    t.ownTab();
+    await expect(t.run(command('navigate', { tab: 't1', url: `${ORIGIN}/orders` })).promise).resolves.toEqual({ tab: 't1', url: `${ORIGIN}/orders`, title: 'Cart' });
+  });
+
+  it('refuses to open about:blank', async () => {
+    const t = setup();
+    await expect(t.run(command('open', { url: 'about:blank' })).promise).rejects.toMatchObject({ code: 'restricted_page' });
+    expect(t.api.createTab).not.toHaveBeenCalled();
+  });
+
+  it('closes a tab created after the command was cancelled', async () => {
+    const t = setup();
+    const controller = new AbortController();
+    vi.mocked(t.api.createTab).mockImplementationOnce(async (url: string) => {
+      t.browserTabs.set(100, { id: 100, url, title: 'Shop', status: 'complete', active: false });
+      controller.abort();
+      return 100;
+    });
+    await expect(t.run(command('open', { url: `${ORIGIN}/` }), controller.signal).promise).rejects.toMatchObject({ code: 'cancelled' });
+    expect(t.api.removeTab).toHaveBeenCalledWith(100);
+    expect(t.tabs.get('t1')).toBeUndefined();
+  });
+});
+
+describe('Executor: wait', () => {
+  /** A page where the text never appears; `onLookup` runs on each look. */
+  function neverFound(onLookup: (count: number) => void) {
+    let lookups = 0;
+    return (request: PageRequest): PageResponse => {
+      if (request.op !== 'findText') return { ok: true, op: request.op } as PageResponse;
+      lookups += 1;
+      onLookup(lookups);
+      return { ok: true, op: 'findText', found: false };
+    };
+  }
+
+  it('stops waiting for text when Pause is pressed', async () => {
+    let pause = () => undefined as unknown;
+    const t = setup({ page: neverFound((count) => count === 2 && pause()) });
+    pause = () => t.setControl('paused');
+    t.ownTab();
+    await expect(t.run(command('wait', { tab: 't1', text: 'Order placed' })).promise).rejects.toMatchObject({ code: 'device_paused' });
+  });
+
+  it('stops waiting for text when the grant is revoked', async () => {
+    let revoke = () => undefined as unknown;
+    const t = setup({ page: neverFound((count) => count === 2 && revoke()) });
+    revoke = () => t.setGrant(undefined);
+    t.ownTab();
+    await expect(t.run(command('wait', { tab: 't1', text: 'Order placed' })).promise).rejects.toMatchObject({ code: 'no_grant' });
   });
 });
 

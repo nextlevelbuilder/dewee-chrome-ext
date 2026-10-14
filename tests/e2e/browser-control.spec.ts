@@ -146,6 +146,27 @@ test('a risky click waits for the person, and a denial stops it', async ({ servi
   await expect.poll(() => relay.command('click', { tab: 't1', ref, generation }).outcome).toMatchObject({ ok: false, error: { code: 'approval_denied' } });
 });
 
+test('typing with submit and pressing Enter wait for the person, showing what would be sent', async ({ serviceWorker, openPanel }) => {
+  const panel = await connectBrowser(serviceWorker, openPanel);
+  const { text, generation } = await openSite();
+  const drawer = panel.getByRole('dialog', { name: 'Browser control' });
+  const card = drawer.getByTestId('browser-approval');
+
+  const typed = relay.command('type', { tab: 't1', ref: refOf(text, 'Email'), generation, text: 'ada@example.test\nplease send', submit: true });
+  await expect(card).toContainText(`Researcher wants to type into “Email” on 127.0.0.1:${site.port} and submit it.`);
+  await expect(card.getByTestId('browser-approval-preview')).toHaveText('Text to send: ada@example.test please send');
+  await card.getByRole('button', { name: 'Deny' }).click();
+  expect(await typed.outcome).toMatchObject({ ok: false, error: { code: 'approval_denied' } });
+
+  const pressed = relay.command('press', { tab: 't1', key: 'Enter' });
+  await expect(card).toContainText('Researcher wants to press Enter');
+  await card.getByRole('button', { name: 'Deny' }).click();
+  expect(await pressed.outcome).toMatchObject({ ok: false, error: { code: 'approval_denied' } });
+
+  // The preview lived only in the card.
+  expect(await dumpStorage(serviceWorker)).not.toContain('please send');
+});
+
 test('Stop preempts a running command and refuses new ones until Resume', async ({ serviceWorker, openPanel }) => {
   const panel = await connectBrowser(serviceWorker, openPanel);
   await openSite();

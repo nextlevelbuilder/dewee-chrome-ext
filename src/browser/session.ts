@@ -4,9 +4,13 @@
  * API key. A profile switch, sign-out or turning the preference off closes the socket, cancels
  * running commands and forgets grants and owned tabs, so nothing carries over to another profile.
  *
- * Kept in storage: the server-generated device id and name per profile (`storage.local`, not a
- * secret), and, for a worker restart, the owned-tab handles and the Pause/Stop state
- * (`storage.session`). Never kept: page content, snapshots, typed text, the API key.
+ * Kept in storage: the server-generated device id and name per profile and the ids of grants the
+ * person created here (`storage.local`, not secrets), and, for a worker restart, the owned-tab
+ * handles and the Pause/Stop state (`storage.session`). Never kept: page content, snapshots,
+ * typed text, the API key.
+ *
+ * Grants are not taken on the Gateway's word: one is used only if this browser created it, it
+ * names this device, and every origin in it is an exact origin.
  */
 import { browser } from 'wxt/browser';
 import { z } from 'zod';
@@ -22,7 +26,7 @@ import { CommandRunner } from './command-runner';
 import { deviceNameFor, platformOs } from './device-name';
 import { Executor, type Activity } from './executor';
 import { isRestrictedUrl, LocalGuard, type ControlState } from './policy';
-import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, RELAY_EVENTS, type EventFrame, type Grant } from './protocol';
+import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, RELAY_EVENTS, type EventFrame, type Grant } from './protocol';
 import { BROWSER_PORT, type PanelState } from './panel-state';
 import { TabRegistry } from './tabs';
 import { RelayError, RelayTransport, relayUrl, type SocketFactory, type TransportState } from './transport';
@@ -31,8 +35,12 @@ export const BROWSER_ALARM = 'browser-relay';
 export const deviceKey = (profileId: string) => `browserDevice:${profileId}`;
 export const controlKey = (profileId: string) => `browserControl:${profileId}`;
 export const tabsKey = (profileId: string) => `browserTabs:${profileId}`;
+/** Ids of the grants the person created in this browser (not secret). Grants are honoured only from this list. */
+export const grantsKey = (profileId: string) => `browserGrants:${profileId}`;
+const OWN_GRANTS_MAX = 200;
 
 const deviceRecord = z.object({ device_id: z.uuid(), name: z.string() });
+const ownGrantsRecord = z.array(z.string().min(1)).max(OWN_GRANTS_MAX);
 const controlRecord = z.enum(['active', 'paused', 'stopped']);
 
 export interface SessionDeps {
@@ -77,6 +85,8 @@ export class BrowserSession {
   private refused = false;
   private device: z.infer<typeof deviceRecord> | null = null;
   private readonly grants = new Map<string, Grant>();
+  /** Grant ids created from this browser for the current profile. */
+  private ownGrants: string[] = [];
   private control: ControlState = 'active';
   private readonly tabs = new TabRegistry();
   private readonly activities = new Map<string, Activity>();
@@ -155,9 +165,13 @@ export class BrowserSession {
     this.profileId = profile.id;
     this.origin = profile.origin;
     this.refused = false;
-    const [local, session] = await Promise.all([browser.storage.local.get(deviceKey(profile.id)), browser.storage.session.get([controlKey(profile.id), tabsKey(profile.id)])]);
+    const [local, session] = await Promise.all([
+      browser.storage.local.get([deviceKey(profile.id), grantsKey(profile.id)]),
+      browser.storage.session.get([controlKey(profile.id), tabsKey(profile.id)]),
+    ]);
     if (epoch !== this.epoch) return;
     this.device = deviceRecord.safeParse(local[deviceKey(profile.id)]).data ?? null;
+    this.ownGrants = ownGrantsRecord.safeParse(local[grantsKey(profile.id)]).data ?? [];
     this.control = controlRecord.safeParse(session[controlKey(profile.id)]).data ?? 'active';
     this.tabs.restore(session[tabsKey(profile.id)]);
     const profileId = profile.id;
@@ -209,6 +223,7 @@ export class BrowserSession {
     transport?.stop();
     this.device = null;
     this.grants.clear();
+    this.ownGrants = [];
     this.tabs.clear();
     this.activities.clear();
     this.connection = 'offline';
@@ -246,13 +261,41 @@ export class BrowserSession {
     this.setGrants([]);
     this.tabs.clear();
     this.persistTabs();
-    if (profileId) await browser.storage.local.remove(deviceKey(profileId)).catch(() => undefined);
+    this.ownGrants = [];
+    if (profileId) await browser.storage.local.remove([deviceKey(profileId), grantsKey(profileId)]).catch(() => undefined);
     this.broadcast();
+  }
+
+  /** A grant this browser created, for this device, over exact origins only. */
+  private acceptable(grant: Grant): boolean {
+    const device = this.device;
+    return (
+      !grant.revoked_at &&
+      this.ownGrants.includes(grant.grant_id) &&
+      device !== null &&
+      grant.device_id === device.device_id &&
+      grant.origins.length > 0 &&
+      grant.origins.every(isExactOrigin)
+    );
+  }
+
+  private async rememberGrant(grantId: string): Promise<void> {
+    const profileId = this.profileId;
+    if (!profileId) return;
+    this.ownGrants = [...this.ownGrants.filter((id) => id !== grantId), grantId].slice(-OWN_GRANTS_MAX);
+    await browser.storage.local.set({ [grantsKey(profileId)]: this.ownGrants });
+  }
+
+  private forgetGrantId(grantId: string): void {
+    const profileId = this.profileId;
+    if (!profileId || !this.ownGrants.includes(grantId)) return;
+    this.ownGrants = this.ownGrants.filter((id) => id !== grantId);
+    void browser.storage.local.set({ [grantsKey(profileId)]: this.ownGrants }).catch(() => undefined);
   }
 
   private setGrants(list: Grant[]): void {
     this.grants.clear();
-    for (const grant of list) if (!grant.revoked_at) this.grants.set(grant.grant_id, grant);
+    for (const grant of list) if (this.acceptable(grant)) this.grants.set(grant.grant_id, grant);
     for (const tab of this.tabs.all()) if (!this.grants.has(tab.grantId)) this.tabs.releaseGrant(tab.grantId);
     this.persistTabs();
     this.broadcast();
@@ -260,6 +303,7 @@ export class BrowserSession {
 
   private dropGrant(grantId: string): void {
     this.grants.delete(grantId);
+    this.forgetGrantId(grantId);
     this.runner.cancelWhere((command) => command.grant_id === grantId);
     this.tabs.releaseGrant(grantId);
     this.persistTabs();
@@ -431,7 +475,15 @@ export class BrowserSession {
     }
     const capabilities: ['browser.read'] | ['browser.read', 'browser.control'] = request.capabilities.includes('browser.control') ? ['browser.read', 'browser.control'] : ['browser.read'];
     const { grant } = await transport.request('browser.grant.create', { device_id: device.device_id, agent_ids: request.agentIds, origins, capabilities, ttl_seconds: request.ttlSeconds });
-    if (this.transport === transport && !grant.revoked_at) this.grants.set(grant.grant_id, grant);
+    if (this.transport !== transport) return { ok: false, code: 'device_offline' };
+    await this.rememberGrant(grant.grant_id);
+    // The Gateway's copy must match what was asked for; otherwise it is not used.
+    const matches = grant.origins.length === origins.length && grant.origins.every((origin) => origins.includes(origin));
+    if (!matches || !this.acceptable(grant)) {
+      this.forgetGrantId(grant.grant_id);
+      return { ok: false, code: 'invalid_response' };
+    }
+    this.grants.set(grant.grant_id, grant);
     this.broadcast();
     return { ok: true };
   }

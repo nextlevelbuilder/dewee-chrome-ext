@@ -162,7 +162,8 @@ export type Device = z.infer<typeof deviceSchema>;
 const uuid = z.uuid();
 const deviceName = z.string().trim().min(1).max(80);
 const deviceCapabilities = z.union([z.tuple([z.literal('standard')]), z.tuple([z.literal('standard'), z.literal('advanced')])]);
-const exactOrigin = z.string().refine((value) => {
+/** `scheme://host[:port]` exactly, https (or http on loopback), no wildcard. */
+export function isExactOrigin(value: string): boolean {
   try {
     const parsed = new URL(value);
     // The URL parser accepts `*` in a host name; v1 has no wildcards.
@@ -170,7 +171,8 @@ const exactOrigin = z.string().refine((value) => {
   } catch {
     return false;
   }
-}, 'exact https origin, or http on loopback');
+}
+const exactOrigin = z.string().refine(isExactOrigin, 'exact https origin, or http on loopback');
 
 export const methodParamsSchemas = {
   connect: z.object({ token: z.string().min(1), client: z.literal('dewee-chrome-ext'), version: z.string().min(1) }).strict(),

@@ -24,16 +24,16 @@ export function urlOrigin(url: string | undefined | null): string | null {
 
 /**
  * Pages the extension never drives: browser and extension pages, the Chrome Web Store, local
- * files, inline documents, and `about:` pages (only `about:blank` may be opened).
+ * files, inline documents and every `about:` page. `about:blank` is not opened either: a blank tab
+ * has no granted origin to check later commands against, so agents open the granted URL directly.
  */
-export function isRestrictedUrl(url: string, opening = false): boolean {
+export function isRestrictedUrl(url: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return true;
   }
-  if (parsed.protocol === 'about:') return !(opening && parsed.href === 'about:blank');
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return true;
   if (parsed.username || parsed.password) return true;
   const host = parsed.hostname.toLowerCase();
@@ -62,7 +62,7 @@ export function grantExpired(grant: Grant, now: number): boolean {
 }
 
 export interface GuardDeps {
-  /** Chrome host permission for exactly this origin (`permissions.contains`). */
+  /** Chrome host permission granted for exactly this origin's host (a wildcard pattern does not count). */
   hasHostPermission(origin: string): Promise<boolean>;
   /** Current URL of a tab; undefined when Chrome hides it (no host permission), null when the tab is gone. */
   tabUrl(tabId: number): Promise<string | undefined | null>;
@@ -92,10 +92,9 @@ export class LocalGuard {
   }
 
   /** A URL the agent asked for, or a tab ended up on: allowed page, granted origin, Chrome site access. */
-  async checkUrl(url: string | undefined | null, grant: Grant, opening = false): Promise<GuardResult> {
+  async checkUrl(url: string | undefined | null, grant: Grant): Promise<GuardResult> {
     if (!url) return refuse('origin_not_granted', 'The page address is not available for this grant');
-    if (isRestrictedUrl(url, opening)) return refuse('restricted_page', 'This page cannot be controlled');
-    if (opening && url === 'about:blank') return { ok: true };
+    if (isRestrictedUrl(url)) return refuse('restricted_page', 'This page cannot be controlled');
     const origin = urlOrigin(url);
     if (!origin || !grant.origins.includes(origin)) return refuse('origin_not_granted', 'This site is not in the grant');
     if (!(await this.deps.hasHostPermission(origin))) return refuse('origin_not_granted', 'Chrome site access for this site is missing');

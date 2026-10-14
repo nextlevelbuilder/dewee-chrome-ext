@@ -9,8 +9,9 @@
  *
  * Snapshot: a compact accessibility outline, one element per line (`[e12] button "Sign in"`).
  * Refs live in the isolated world (invisible to the page), bound to a generation the extension
- * moves on every navigation; a large DOM change marks them stale. Values of password, payment
- * and one-time-code fields are never read out; hidden and invisible nodes are skipped;
+ * moves on every navigation; a large DOM change marks them stale. Values of password, PIN, payment
+ * and one-time-code fields are never read out, whatever role the page gives them; hidden and
+ * invisible nodes are skipped;
  * cross-origin frames are omitted and same-origin frames are included only when their origin is
  * in the grant.
  */
@@ -19,6 +20,8 @@ import type { PressKey } from './protocol';
 export type PageRequest =
   | { op: 'snapshot'; origins: string[]; generation: number; maxChars: number }
   | { op: 'describe'; origins: string[]; generation: number; ref: string }
+  /** Describes the element that has keyboard focus (the page body when nothing has). */
+  | { op: 'focused'; origins: string[] }
   | { op: 'click'; origins: string[]; generation: number; ref: string }
   | { op: 'type'; origins: string[]; generation: number; ref: string; text: string; submit: boolean }
   | { op: 'press'; origins: string[]; key: PressKey }
@@ -135,13 +138,23 @@ export function pageRun(request: PageRequest): PageResponse {
     return rect.width > 0 && rect.height > 0;
   }
 
-  /** Password, payment card and one-time-code fields: their values never leave the page. */
+  /** Words in a field's name or id that mark a password, PIN or one-time code. */
+  const SECRET_WORDS = new Set(['pass', 'password', 'passwd', 'passcode', 'passphrase', 'pwd', 'pin', 'otp', 'totp', 'otc', 'mfa', '2fa']);
+
+  /**
+   * Password, PIN, payment card and one-time-code fields: their values never leave the page and
+   * nothing is typed into them. A password field switched to `type=text` by a "show password"
+   * button is still caught by its `autocomplete`, name or id.
+   */
   function isSensitive(el: Element): boolean {
     if (inputType(el) === 'password') return true;
     const autocomplete = (attr(el, 'autocomplete') ?? '').toLowerCase();
-    if (/(^|\s)cc-|one-time-code/.test(autocomplete)) return true;
-    const hints = `${attr(el, 'name') ?? ''} ${attr(el, 'id') ?? ''}`.toLowerCase();
-    return /card.?num|cc.?num|cc.?number|cvc|cvv|csc|security.?code|card.?code|expiry|exp.?date|iban/.test(hints);
+    if (/(^|\s)(cc-|one-time-code|current-password|new-password)/.test(autocomplete)) return true;
+    const raw = `${attr(el, 'name') ?? ''} ${attr(el, 'id') ?? ''}`;
+    // Split camelCase and separators into words, so "userPin" and "otp_code" match but "shipping" does not.
+    const hints = raw.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+    if (hints.split(/[^a-z0-9]+/).some((word) => SECRET_WORDS.has(word) || word.startsWith('password'))) return true;
+    return /card.?num|cc.?num|cc.?number|cvc|cvv|csc|security.?code|card.?code|expiry|exp.?date|iban|verification.?code|auth.?code|one.?time/.test(hints);
   }
 
   function isEditable(el: Element): boolean {
@@ -192,11 +205,12 @@ export function pageRun(request: PageRequest): PageResponse {
   }
 
   function valueOf(el: Element, role: string): string {
+    // Before anything else: a sensitive field is redacted whatever role the page gives it.
+    if (isSensitive(el)) return ' value=[redacted]';
     if (role === 'checkbox' || role === 'radio' || role === 'switch') {
       const checked = tagOf(el) === 'INPUT' ? (el as HTMLInputElement).checked : attr(el, 'aria-checked') === 'true';
       return checked ? ' checked' : ' unchecked';
     }
-    if (isSensitive(el) && (role === 'textbox' || role === 'searchbox' || role === 'spinbutton' || role === 'combobox')) return ' value=[redacted]';
     const tag = tagOf(el);
     if (tag === 'SELECT') {
       const select = el as HTMLSelectElement;
@@ -389,6 +403,12 @@ export function pageRun(request: PageRequest): PageResponse {
         if (!found.ok) return found;
         const role = roleOf(found.el);
         return { ok: true, op: 'describe', role, name: clip(nameOf(found.el), TEXT_LINE_MAX), sensitive: isSensitive(found.el), editable: isEditable(found.el) };
+      }
+      case 'focused': {
+        const active = document.activeElement;
+        const el = active && active !== document.documentElement ? active : document.body;
+        if (!el) return { ok: true, op: 'describe', role: '', name: '', sensitive: false, editable: false };
+        return { ok: true, op: 'describe', role: roleOf(el), name: el === document.body ? '' : clip(nameOf(el), TEXT_LINE_MAX), sensitive: isSensitive(el), editable: isEditable(el) };
       }
       case 'click': {
         const found = resolve(request.ref, request.generation);
