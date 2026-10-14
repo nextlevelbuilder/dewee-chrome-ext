@@ -23,6 +23,8 @@ export type PageRequest =
   /** Describes the element that has keyboard focus (the page body when nothing has). */
   | { op: 'focused'; origins: string[] }
   | { op: 'click'; origins: string[]; generation: number; ref: string }
+  /** Outlines the element for a moment before a click, so the person sees what the agent is about to press. */
+  | { op: 'highlight'; origins: string[]; generation: number; ref: string }
   | { op: 'type'; origins: string[]; generation: number; ref: string; text: string; submit: boolean }
   | { op: 'press'; origins: string[]; key: PressKey }
   | { op: 'scroll'; origins: string[]; direction: 'up' | 'down'; amount: 'page' | 'half' }
@@ -34,7 +36,7 @@ export type PageErrorCode = 'stale_ref' | 'element_not_found' | 'element_not_int
 export type PageResponse =
   | { ok: true; op: 'snapshot'; text: string; url: string; title: string }
   | { ok: true; op: 'describe'; role: string; name: string; sensitive: boolean; editable: boolean }
-  | { ok: true; op: 'click' | 'type' | 'press' | 'scroll' | 'watch' }
+  | { ok: true; op: 'click' | 'highlight' | 'type' | 'press' | 'scroll' | 'watch' }
   | { ok: true; op: 'findText'; found: boolean }
   | { ok: false; code: PageErrorCode };
 
@@ -419,6 +421,32 @@ export function pageRun(request: PageRequest): PageResponse {
         (found.el as HTMLElement).focus?.({ preventScroll: true });
         (found.el as HTMLElement).click();
         return { ok: true, op: 'click' };
+      }
+      case 'highlight': {
+        const found = resolve(request.ref, request.generation);
+        if (!found.ok) return found;
+        found.el.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = found.el.getBoundingClientRect();
+        const doc = found.el.ownerDocument;
+        // A short-lived outline drawn by the extension; it takes no clicks and is gone in about a second.
+        const box = doc.createElement('div');
+        box.setAttribute('aria-hidden', 'true');
+        box.style.cssText = [
+          'position:fixed',
+          `left:${rect.left - 3}px`,
+          `top:${rect.top - 3}px`,
+          `width:${rect.width + 6}px`,
+          `height:${rect.height + 6}px`,
+          'border:3px solid #7c3aed',
+          'border-radius:4px',
+          'background:rgba(124,58,237,0.12)',
+          'box-sizing:border-box',
+          'pointer-events:none',
+          'z-index:2147483647',
+        ].join(';');
+        doc.documentElement.appendChild(box);
+        setTimeout(() => box.remove(), 900);
+        return { ok: true, op: 'highlight' };
       }
       case 'type': {
         const found = resolve(request.ref, request.generation);

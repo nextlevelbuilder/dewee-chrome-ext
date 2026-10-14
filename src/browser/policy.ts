@@ -79,8 +79,11 @@ export class LocalGuard {
     private readonly deps: GuardDeps,
   ) {}
 
-  /** Checks that need no browser call: local control state, grant, agent, capability. */
-  checkGrant(command: BrowserCommand, grant: Grant | undefined, control: ControlState): GuardResult {
+  /**
+   * Checks that need no browser call: local control state, grant, agent, capability. Screenshots
+   * pass only when `screenshots` is true (Advanced build with the debugger turned on).
+   */
+  checkGrant(command: BrowserCommand, grant: Grant | undefined, control: ControlState, screenshots = false): GuardResult {
     if (control !== 'active') return refuse('device_paused', `Browser control is ${control} on this device`);
     if (!grant) return refuse('no_grant', 'No grant for this command');
     if (grant.revoked_at) return refuse('grant_revoked', 'The grant was revoked');
@@ -88,7 +91,7 @@ export class LocalGuard {
     if (!grant.agent_ids.includes(command.agent_id)) return refuse('no_grant', 'This agent is not in the grant');
     const needs = ACTION_CLASS[command.action] === 'read' ? 'browser.read' : 'browser.control';
     if (!grant.capabilities.includes(needs)) return refuse('capability_not_granted', `The grant does not allow ${needs}`);
-    if (command.action === 'screenshot') return refuse('unsupported_capability', 'Screenshots need the advanced build');
+    if (command.action === 'screenshot' && !screenshots) return refuse('unsupported_capability', 'Screenshots need the advanced build with the debugger turned on');
     return { ok: true };
   }
 

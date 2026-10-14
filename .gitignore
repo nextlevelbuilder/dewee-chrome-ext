@@ -2,6 +2,8 @@ node_modules/
 .output/
 .output-e2e/
 .output-store/
+.output-advanced/
+.output-e2e-advanced/
 .wxt/
 dist/
 coverage/

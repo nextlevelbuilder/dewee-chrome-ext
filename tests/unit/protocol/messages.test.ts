@@ -43,6 +43,8 @@ describe('requestSchema', () => {
       'approve',
       'capabilities',
       'deviceId',
+      'enabled',
+      'fallback',
       'grantId',
       'id',
       'name',

@@ -23,6 +23,8 @@ export interface RunnerDeps {
   execute(command: BrowserCommand, signal: AbortSignal, context: ExecutionContext): Promise<Record<string, unknown>>;
   /** The device this socket is attached as; commands for another device are refused. */
   deviceId(): string | null;
+  /** A command that ran here ended (for the side panel's timeline): its outcome only, no page data. */
+  onFinished?(command: BrowserCommand, outcome: { ok: true } | { ok: false; code: BrowserErrorCode }): void;
   now?(): number;
 }
 
@@ -84,9 +86,12 @@ export class CommandRunner {
       // A result that cannot be reported (say, a page url over the limit) after an interaction does
       // not undo it: the action may have run, so the agent must not simply repeat it.
       if (!checked.success) throw new CommandError(ACTION_CLASS[command.action] === 'interact' || context.sideEffect ? 'outcome_unknown' : 'internal');
+      this.deps.onFinished?.(command, { ok: true });
       await this.deps.result({ command_id: command.command_id, ok: true, result: checked.data as Record<string, unknown> }).catch(() => undefined);
     } catch (error) {
-      await this.fail(command.command_id, this.codeFor(error, controller.signal, context), error);
+      const code = this.codeFor(error, controller.signal, context);
+      this.deps.onFinished?.(command, { ok: false, code });
+      await this.fail(command.command_id, code, error);
     } finally {
       clearTimeout(timer);
       this.running.delete(command.command_id);

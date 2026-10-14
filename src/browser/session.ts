@@ -6,8 +6,13 @@
  *
  * Kept in storage: the server-generated device id and name per profile, the ids of grants the
  * person created here and the person's last Pause/Stop/Resume (`storage.local`, not secrets), and,
- * for a worker restart, the owned-tab handles (`storage.session`). Never kept: page content,
- * snapshots, typed text, the API key.
+ * for a worker restart, the owned-tab handles and the debugger opt-in (`storage.session`). Never
+ * kept: page content, snapshots, screenshots, typed text, the API key.
+ *
+ * In the Advanced build the session also owns the debugger opt-in: it answers the CDP adapter's
+ * policy check before every debugger command and detaches on Pause, Stop, revoke, expiry,
+ * disconnect and opt-in off. Enroll announces what the build can do; each attach announces what
+ * is usable now (`advanced` only while the opt-in is on).
  *
  * Grants are not taken on the Gateway's word: one is used only if this browser created it, it
  * names this device, and every origin in it is an exact origin.
@@ -18,16 +23,21 @@ import { isApiError } from '@/api/errors';
 import { readCredential } from '@/auth/credential-store';
 import { apiKeyFor } from '@/background/token-manager';
 import type { BackgroundResponse, BrowserRequest } from '@/protocol/messages';
+import { ADVANCED_BUILD, deviceCapabilities } from '@/shared/build-profile';
 import { checkOrigin } from '@/shared/origin';
-import { activeProfile, loadSettings, type Profile } from '@/shared/settings';
+import { activeProfile, loadSettings, type LocalePref, type Profile } from '@/shared/settings';
+import { createCdpAdapter, type CdpAdapterOptions } from './adapters/cdp';
+import type { DriverErrorCode } from './adapters/page-driver';
 import { ApprovalBroker } from './approvals';
 import { chromeBrowserApi, type BrowserApi } from './chrome-api';
 import { CommandRunner } from './command-runner';
 import { deviceNameFor, platformOs } from './device-name';
+import { EngineRouter, type AdvancedEngine, type DebuggerPrefs } from './engine-router';
 import { Executor, type Activity } from './executor';
-import { isRestrictedUrl, LocalGuard, type ControlState } from './policy';
+import { grantExpired, isRestrictedUrl, LocalGuard, type ControlState } from './policy';
 import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, isValidDeviceName, RELAY_EVENTS, type EventFrame, type Grant } from './protocol';
 import { BROWSER_PORT, type PanelState } from './panel-state';
+import { prefersVietnamese, TabMarker, type ActionApi } from './tab-marker';
 import { TabRegistry } from './tabs';
 import { RelayError, RelayTransport, relayUrl, type SocketFactory, type TransportState } from './transport';
 
@@ -37,7 +47,12 @@ export const controlKey = (profileId: string) => `browserControl:${profileId}`;
 export const tabsKey = (profileId: string) => `browserTabs:${profileId}`;
 /** Ids of the grants the person created in this browser (not secret). Grants are honoured only from this list. */
 export const grantsKey = (profileId: string) => `browserGrants:${profileId}`;
+/** The person's debugger choice (Advanced build). `storage.session`: it ends with the browser session. */
+export const debuggerKey = (profileId: string) => `browserDebugger:${profileId}`;
 const OWN_GRANTS_MAX = 200;
+const TIMELINE_MAX = 20;
+/** Longest single wait of the grant-expiry timer; it re-arms after. */
+const EXPIRY_TIMER_MAX_MS = 60 * 60_000;
 /** The Gateway's answer (lowercased) while the workspace has connected browsing turned off. */
 export const FEATURE_DISABLED = 'failed_precondition';
 
@@ -45,13 +60,29 @@ const deviceRecord = z.object({ device_id: z.uuid(), name: z.string() });
 const ownGrantsRecord = z.array(z.string().min(1)).max(OWN_GRANTS_MAX);
 /** The person's last Pause/Stop/Resume for the device (not secret). */
 const controlRecord = z.object({ device_id: z.uuid().nullable(), state: z.enum(['active', 'paused', 'stopped']) }).strict();
+const debuggerRecord = z.object({ enabled: z.boolean(), fallback: z.boolean() }).strict();
 
 export interface SessionDeps {
   api?: BrowserApi;
+  /** Builds the Advanced adapter. Defaults to the debugger adapter in the Advanced build, none otherwise. */
+  cdp?: ((options: CdpAdapterOptions) => AdvancedEngine) | null;
+  /** The toolbar action, for the badge on agent-controlled tabs; null leaves tabs unmarked. */
+  action?: ActionApi | null;
   createSocket?: SocketFactory;
   token?(profileId: string): Promise<string>;
   random?(): number;
   now?(): number;
+}
+
+/** `chrome.action`, when the worker has it (not in unit tests). */
+function chromeAction(): ActionApi | null {
+  if (typeof chrome === 'undefined' || !chrome.action?.setBadgeText) return null;
+  return {
+    // `null` resets a tab to the global badge; the typings only list strings.
+    setBadgeText: (details) => chrome.action.setBadgeText(details as chrome.action.BadgeTextDetails),
+    setBadgeBackgroundColor: (details) => chrome.action.setBadgeBackgroundColor(details),
+    setTitle: (details) => chrome.action.setTitle(details),
+  };
 }
 
 export interface PanelPort {
@@ -100,17 +131,40 @@ export class BrowserSession {
   private attachedTransport: RelayTransport | null = null;
   private readonly tabs = new TabRegistry();
   private readonly activities = new Map<string, Activity>();
+  /** Activities that just ended, kept until the runner reports their outcome (timeline). */
+  private readonly ended = new Map<string, Activity>();
+  /** Per owned tab: the agent and site of its last command, for the panel's tab list. */
+  private readonly tabMeta = new Map<string, { agentName: string; domain: string }>();
+  private timeline: PanelState['timeline'] = [];
+  private pauseReason: PanelState['pauseReason'];
+  /** Advanced build: off by default, for this browser session only. */
+  private debuggerPrefs: DebuggerPrefs = { enabled: false, fallback: true };
+  private locale: LocalePref = 'auto';
+  private expiryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly ports = new Set<PanelPort>();
   private readonly approvals = new ApprovalBroker(() => this.broadcast());
+  private readonly router: EngineRouter;
   private readonly api: BrowserApi;
+  private readonly guard: LocalGuard;
+  private readonly marker: TabMarker | null;
   private readonly runner: CommandRunner;
   private readonly now: () => number;
   private syncing: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly deps: SessionDeps = {}) {
-    this.api = deps.api ?? chromeBrowserApi;
     this.now = deps.now ?? Date.now;
-    const guard = new LocalGuard(this.tabs, {
+    // The constant keeps the debugger adapter out of Standard bundles.
+    const factory = deps.cdp === undefined ? (ADVANCED_BUILD ? createCdpAdapter : null) : deps.cdp;
+    const cdp = factory?.({
+      check: (tabId) => this.cdpCheck(tabId),
+      onDetached: (tabId, reason) => this.onDebuggerDetached(tabId, reason),
+      onChange: () => this.broadcast(),
+    });
+    this.router = new EngineRouter(deps.api ?? chromeBrowserApi, () => this.debuggerPrefs, cdp);
+    this.api = this.router;
+    const action = deps.action === undefined ? chromeAction() : deps.action;
+    this.marker = action ? new TabMarker(action, 'Open Dewee', () => prefersVietnamese(this.locale)) : null;
+    this.guard = new LocalGuard(this.tabs, {
       hasHostPermission: (origin) => this.api.hasHostPermission(origin),
       tabUrl: async (tabId) => {
         const info = await this.api.getTab(tabId);
@@ -121,13 +175,20 @@ export class BrowserSession {
     const executor = new Executor({
       api: this.api,
       tabs: this.tabs,
-      guard,
+      guard: this.guard,
       approvals: this.approvals,
       grant: (grantId) => this.grants.get(grantId),
       control: () => this.control,
+      screenshots: () => this.router.advancedAvailable && this.debuggerPrefs.enabled,
       onActivity: (activity, running) => {
-        if (running) this.activities.set(activity.commandId, { ...activity });
-        else this.activities.delete(activity.commandId);
+        if (running) {
+          this.activities.set(activity.commandId, { ...activity });
+          if (activity.tab) this.tabMeta.set(activity.tab, { agentName: activity.agentName, domain: activity.domain });
+        } else {
+          this.activities.delete(activity.commandId);
+          this.ended.set(activity.commandId, { ...activity });
+          if (this.ended.size > 50) this.ended.delete(this.ended.keys().next().value as string);
+        }
         this.broadcast();
       },
       onTabsChanged: () => this.persistTabs(),
@@ -138,6 +199,23 @@ export class BrowserSession {
       result: (params) => this.transport?.request('browser.command.result', params) ?? Promise.reject(new RelayError('device_offline', 'offline')),
       execute: (command, signal, context) => executor.execute(command, signal, context) as Promise<Record<string, unknown>>,
       deviceId: () => this.device?.device_id ?? null,
+      onFinished: (command, outcome) => {
+        const activity = this.ended.get(command.command_id);
+        this.ended.delete(command.command_id);
+        this.timeline = [
+          {
+            id: command.command_id,
+            at: this.now(),
+            agentName: activity?.agentName ?? command.agent_name ?? '',
+            action: command.action,
+            domain: activity?.domain ?? '',
+            ok: outcome.ok,
+            ...(outcome.ok ? {} : { code: outcome.code }),
+          },
+          ...this.timeline,
+        ].slice(0, TIMELINE_MAX);
+        this.broadcast();
+      },
       now: this.now,
     });
   }
@@ -152,6 +230,7 @@ export class BrowserSession {
   private async syncNow(credentialChanged: boolean): Promise<void> {
     if (credentialChanged) this.refused = false;
     const settings = await loadSettings();
+    this.locale = settings.prefs.locale;
     const profile = activeProfile(settings);
     if (!settings.prefs.connectedBrowser || !profile) this.mode = 'off';
     else if (profile.kind === 'cloud') this.mode = 'cloud';
@@ -177,7 +256,7 @@ export class BrowserSession {
     this.refused = false;
     const [local, session, storedControl] = await Promise.all([
       browser.storage.local.get([deviceKey(profile.id), grantsKey(profile.id)]),
-      browser.storage.session.get([tabsKey(profile.id)]),
+      browser.storage.session.get([tabsKey(profile.id), debuggerKey(profile.id)]),
       browser.storage.local.get(controlKey(profile.id)).then(
         (items) => ({ read: true as const, value: items[controlKey(profile.id)] }),
         () => ({ read: false as const, value: undefined }),
@@ -188,6 +267,11 @@ export class BrowserSession {
     this.ownGrants = ownGrantsRecord.safeParse(local[grantsKey(profile.id)]).data ?? [];
     this.restoreControl(storedControl);
     this.tabs.restore(session[tabsKey(profile.id)]);
+    const storedDebugger = debuggerRecord.safeParse(session[debuggerKey(profile.id)]).data;
+    this.debuggerPrefs = this.router.advancedAvailable && storedDebugger ? storedDebugger : { enabled: false, fallback: true };
+    // A worker that restarted may have left the debugger attached to an agent's tab: let it go.
+    for (const tab of this.tabs.all()) void this.router.forceDetach(tab.tabId).catch(() => undefined);
+    this.markTabs();
     const profileId = profile.id;
     const transport: RelayTransport = new RelayTransport({
       url: relayUrl(profile.origin),
@@ -215,6 +299,7 @@ export class BrowserSession {
           if (this.attachedTransport === transport) this.attachedTransport = null;
           this.runner.cancelAll();
           this.approvals.denyAll();
+          void this.router.detachAll();
         }
         this.broadcast();
       },
@@ -236,11 +321,20 @@ export class BrowserSession {
     this.runner.cancelAll();
     this.approvals.denyAll();
     transport?.stop();
+    for (const tab of this.tabs.all()) void this.router.forget(tab.tabId);
+    void this.router.detachAll();
     this.device = null;
     this.grants.clear();
     this.ownGrants = [];
     this.tabs.clear();
     this.activities.clear();
+    this.ended.clear();
+    this.tabMeta.clear();
+    this.timeline = [];
+    this.pauseReason = undefined;
+    this.debuggerPrefs = { enabled: false, fallback: true };
+    this.clearExpiryTimer();
+    this.markTabs();
     this.connection = 'offline';
     this.error = undefined;
     // The person's Pause/Stop stays in storage.local for when this profile comes back.
@@ -289,7 +383,7 @@ export class BrowserSession {
       return;
     }
     try {
-      const attached = await transport.request('browser.device.attach', { device_id: device.device_id, capabilities: ['standard'] });
+      const attached = await transport.request('browser.device.attach', { device_id: device.device_id, capabilities: this.liveCapabilities() });
       if (epoch !== this.epoch) return;
       this.setGrants(attached.grants);
       this.attachedTransport = transport;
@@ -313,11 +407,17 @@ export class BrowserSession {
     }
   }
 
+  /** What the Gateway may ask of this browser right now: `advanced` only while the person has the debugger on. */
+  private liveCapabilities() {
+    return deviceCapabilities(this.router.advancedAvailable, this.debuggerPrefs.enabled);
+  }
+
   private async forgetDevice(): Promise<void> {
     const profileId = this.profileId;
     this.device = null;
     this.runner.cancelAll();
     this.approvals.denyAll();
+    void this.router.detachAll();
     this.setGrants([]);
     this.tabs.clear();
     this.persistTabs();
@@ -361,7 +461,8 @@ export class BrowserSession {
     for (const grant of list) if (this.acceptable(grant)) this.grants.set(grant.grant_id, grant);
     // A grant the Gateway no longer lists is gone: stop what runs under it, approvals included.
     this.runner.cancelWhere((command) => !this.grants.has(command.grant_id), 'grant_revoked');
-    for (const tab of this.tabs.all()) if (!this.grants.has(tab.grantId)) this.tabs.releaseGrant(tab.grantId);
+    for (const tab of this.tabs.all()) if (!this.grants.has(tab.grantId)) this.releaseTabs(tab.grantId);
+    this.scheduleExpiry();
     this.persistTabs();
     this.broadcast();
   }
@@ -370,9 +471,50 @@ export class BrowserSession {
     this.grants.delete(grantId);
     this.forgetGrantId(grantId);
     this.runner.cancelWhere((command) => command.grant_id === grantId, 'grant_revoked');
-    this.tabs.releaseGrant(grantId);
+    this.releaseTabs(grantId);
+    this.scheduleExpiry();
     this.persistTabs();
     this.broadcast();
+  }
+
+  /** The agent loses the grant's tabs (they stay open for the person); the debugger lets go of them at once. */
+  private releaseTabs(grantId: string): void {
+    for (const tab of this.tabs.releaseGrant(grantId)) {
+      this.tabMeta.delete(tab.handle);
+      void this.router.forget(tab.tabId);
+    }
+  }
+
+  private clearExpiryTimer(): void {
+    if (this.expiryTimer !== null) clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+  }
+
+  /**
+   * Fires when the next grant expires: commands under it stop (`grant_expired`) and the debugger
+   * detaches from its tabs right then, not at the next command.
+   */
+  private scheduleExpiry(): void {
+    this.clearExpiryTimer();
+    const now = this.now();
+    const next = Math.min(...[...this.grants.values()].map((grant) => Date.parse(grant.expires_at)).filter((at) => Number.isFinite(at) && at > now));
+    if (!Number.isFinite(next)) return;
+    this.expiryTimer = setTimeout(() => {
+      this.expiryTimer = null;
+      this.expireGrants();
+    }, Math.min(next - now + 50, EXPIRY_TIMER_MAX_MS));
+  }
+
+  private expireGrants(): void {
+    const now = this.now();
+    const expired = new Set([...this.grants.values()].filter((grant) => grantExpired(grant, now)).map((grant) => grant.grant_id));
+    if (expired.size) {
+      this.runner.cancelWhere((command) => expired.has(command.grant_id), 'grant_expired');
+      for (const tab of this.tabs.all()) if (expired.has(tab.grantId)) void this.router.forget(tab.tabId);
+      this.markTabs();
+      this.broadcast();
+    }
+    this.scheduleExpiry();
   }
 
   private async refreshGrants(): Promise<void> {
@@ -416,6 +558,8 @@ export class BrowserSession {
     const tab = this.tabs.markClosed(tabId);
     if (!tab) return;
     this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle, 'tab_closed');
+    this.tabMeta.delete(tab.handle);
+    void this.router.forget(tabId);
     this.persistTabs();
   }
 
@@ -427,10 +571,76 @@ export class BrowserSession {
     this.persistTabs();
   }
 
-  /** The person clicked or typed in an owned tab: their input wins over the agent's current command there. */
+  /**
+   * The person clicked or typed in an owned tab (trusted input, reported by the bundled watcher):
+   * they take over. The command running there stops and browser control pauses on this device
+   * until they press Resume. Input the debugger itself is sending right now is not theirs.
+   */
   onUserInput(tabId: number): void {
+    if (this.router.isDispatching(tabId)) return;
     const tab = this.tabs.noteUserInput(tabId, this.now());
-    if (tab) this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle);
+    if (!tab) return;
+    this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle);
+    if (this.control === 'active') void this.setControl('paused', 'takeover');
+  }
+
+  // ---------- Debugger (Advanced build) ----------
+
+  /**
+   * Policy for every debugger command, from the live state (not the command's copy): the person's
+   * opt-in, Pause/Stop, the tab is an agent's own tab under a live grant, and the page in it right
+   * now is an allowed, granted origin with Chrome site access.
+   */
+  private async cdpCheck(tabId: number): Promise<DriverErrorCode | null> {
+    if (!this.debuggerPrefs.enabled) return 'debugger_unavailable';
+    if (this.control !== 'active') return 'device_paused';
+    const tab = this.tabs.byTabId(tabId);
+    if (!tab) return 'tab_not_owned';
+    const grant = this.grants.get(tab.grantId);
+    if (!grant || grant.revoked_at) return 'grant_revoked';
+    if (grantExpired(grant, this.now())) return 'grant_expired';
+    const info = await this.api.getTab(tabId);
+    if (!info) return 'tab_closed';
+    const page = await this.guard.checkUrl(info.url, grant);
+    if (!page.ok) return page.code === 'restricted_page' ? 'restricted_page' : 'origin_not_granted';
+    return null;
+  }
+
+  /** Chrome ended a debugger session: when the person pressed Cancel on Chrome's bar, that is their "off". */
+  private onDebuggerDetached(tabId: number, reason: string): void {
+    const tab = this.tabs.byTabId(tabId);
+    if (tab) this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle, 'debugger_unavailable');
+    if (reason === 'canceled_by_user' && this.debuggerPrefs.enabled) void this.setDebugger({ ...this.debuggerPrefs, enabled: false });
+    else this.broadcast();
+  }
+
+  private async setDebugger(prefs: DebuggerPrefs): Promise<void> {
+    const was = this.debuggerPrefs;
+    this.debuggerPrefs = prefs;
+    if (was.enabled && !prefs.enabled) {
+      // Turning it off stops what runs with it and lets go of every tab now.
+      const attached = new Set(this.router.attachedTabs);
+      this.runner.cancelWhere((command) => {
+        const handle = tabOf(command.params);
+        const tab = handle ? this.tabs.get(handle) : undefined;
+        return tab !== undefined && attached.has(tab.tabId);
+      }, 'debugger_unavailable');
+      await this.router.detachAll();
+    }
+    const profileId = this.profileId;
+    if (profileId) await browser.storage.session.set({ [debuggerKey(profileId)]: prefs }).catch(() => undefined);
+    // Tell the Gateway on the attached socket (attach again only updates capabilities).
+    const device = this.device;
+    const transport = this.transport;
+    if (was.enabled !== prefs.enabled && device && transport?.isReady && this.attachedTransport === transport) {
+      await transport
+        .request('browser.device.attach', { device_id: device.device_id, capabilities: this.liveCapabilities() })
+        .then((attached) => {
+          if (this.transport === transport) this.setGrants(attached.grants);
+        })
+        .catch(() => undefined);
+    }
+    this.broadcast();
   }
 
   // ---------- Side panel ----------
@@ -448,6 +658,7 @@ export class BrowserSession {
 
   state(): PanelState {
     const activity = [...this.activities.values()].at(-1);
+    const activityGrant = activity ? this.grants.get(activity.grantId) : undefined;
     return {
       mode: this.mode,
       connection: this.mode === 'ready' ? this.connection : 'offline',
@@ -455,7 +666,30 @@ export class BrowserSession {
       device: this.device ? { ...this.device } : null,
       grants: [...this.grants.values()],
       control: this.control,
-      activity: activity ? { agentName: activity.agentName, channel: activity.channel, domain: activity.domain, action: activity.action } : null,
+      ...(this.control === 'paused' && this.pauseReason ? { pauseReason: this.pauseReason } : {}),
+      activity: activity
+        ? {
+            agentName: activity.agentName,
+            channel: activity.channel,
+            domain: activity.domain,
+            action: activity.action,
+            origins: activityGrant ? [...activityGrant.origins] : [],
+            expiresAt: activityGrant?.expires_at ?? null,
+          }
+        : null,
+      advanced: {
+        available: this.router.advancedAvailable,
+        enabled: this.debuggerPrefs.enabled,
+        fallback: this.debuggerPrefs.fallback,
+        attached: this.router.attachedTabs.length,
+      },
+      tabs: this.tabs.all().map((tab) => ({
+        handle: tab.handle,
+        agentName: this.tabMeta.get(tab.handle)?.agentName ?? '',
+        domain: this.tabMeta.get(tab.handle)?.domain ?? '',
+        expiresAt: this.grants.get(tab.grantId)?.expires_at ?? null,
+      })),
+      timeline: this.timeline.map((entry) => ({ ...entry })),
       approvals: this.approvals.pending,
     };
   }
@@ -484,6 +718,10 @@ export class BrowserSession {
         case 'browser.grant.refresh':
           await this.refreshGrants();
           return { ok: true };
+        case 'browser.advanced':
+          if (!this.router.advancedAvailable) return { ok: false, code: 'unsupported_capability' };
+          await this.setDebugger({ enabled: request.enabled, fallback: request.fallback });
+          return { ok: true };
       }
       const transport = this.transport;
       if (this.mode !== 'ready' || !transport?.isReady) return { ok: false, code: 'device_offline' };
@@ -493,7 +731,9 @@ export class BrowserSession {
           const os = await platformOs();
           const name = request.name.trim() || deviceNameFor(os);
           if (!isValidDeviceName(name)) return { ok: false, code: 'invalid_device_name' };
-          const { device_id } = await transport.request('browser.device.enroll', { name, platform: os, capabilities: ['standard'] });
+          // What this build can do; attach then announces what is turned on right now.
+          const capabilities = deviceCapabilities(this.router.advancedAvailable, true);
+          const { device_id } = await transport.request('browser.device.enroll', { name, platform: os, capabilities });
           const profileId = this.profileId;
           if (!profileId || this.transport !== transport) return { ok: false, code: 'device_offline' };
           this.device = { device_id, name };
@@ -574,21 +814,26 @@ export class BrowserSession {
       return { ok: false, code: 'invalid_response' };
     }
     this.grants.set(grant.grant_id, grant);
+    this.scheduleExpiry();
     this.broadcast();
     return { ok: true };
   }
 
-  private async setControl(state: ControlState): Promise<void> {
+  private async setControl(state: ControlState, reason?: PanelState['pauseReason']): Promise<void> {
     this.control = state;
     this.controlChosen = true;
-    await this.persistControl();
+    this.pauseReason = state === 'paused' ? reason : undefined;
     if (state !== 'active') {
       this.runner.cancelAll();
       this.approvals.denyAll();
+      void this.router.detachAll();
     }
+    await this.persistControl();
     // Stop also ends the agent's hold on its tabs; they stay open for the person.
     if (state === 'stopped') {
+      for (const tab of this.tabs.all()) void this.router.forget(tab.tabId);
       this.tabs.clear();
+      this.tabMeta.clear();
       this.persistTabs();
     }
     // Not yet attached: attach re-sends the stored choice once it completes.
@@ -599,7 +844,20 @@ export class BrowserSession {
   }
 
   private persistTabs(): void {
+    this.markTabs();
     if (!this.profileId) return;
     void browser.storage.session.set({ [tabsKey(this.profileId)]: this.tabs.serialize() }).catch(() => undefined);
+  }
+
+  /** The toolbar badge on every tab an agent controls under a live grant. */
+  private markTabs(): void {
+    if (!this.marker) return;
+    const now = this.now();
+    const marked = new Map<number, string>();
+    for (const tab of this.tabs.all()) {
+      const grant = this.grants.get(tab.grantId);
+      if (grant && !grantExpired(grant, now)) marked.set(tab.tabId, this.tabMeta.get(tab.handle)?.agentName ?? '');
+    }
+    this.marker.sync(marked);
   }
 }

@@ -12,7 +12,7 @@ import type { Device, Grant } from '@/browser/protocol';
 import type { BackgroundResponse, BrowserRequest } from '@/protocol/messages';
 import { errorText, useI18n } from '@/shared/i18n';
 import { IconClose } from '@/shared/icons';
-import { ApprovalCards, ControlButtons } from './BrowserActivity';
+import { ApprovalCards, ControlButtons, controlNotice, formatTime } from './BrowserActivity';
 import { GrantForm } from './GrantForm';
 
 type Call = (request: BrowserRequest) => Promise<BackgroundResponse>;
@@ -176,13 +176,7 @@ function GrantList({ grants, agents, call }: { grants: Grant[]; agents: Agent[];
     const agent = agents.find((item) => item.id === id);
     return agent ? agent.name || agent.key : id;
   };
-  const time = (iso: string) => {
-    try {
-      return new Intl.DateTimeFormat(locale, { timeStyle: 'short', dateStyle: 'short' }).format(new Date(iso));
-    } catch {
-      return iso;
-    }
-  };
+  const time = (iso: string) => formatTime(locale, iso);
   return (
     <section className="browser-section" aria-label={t('browser.grants')}>
       <span className="section-label">{t('browser.grants')}</span>
@@ -215,6 +209,94 @@ function GrantList({ grants, agents, call }: { grants: Grant[]; agents: Agent[];
           {errorText(t, error)}
         </p>
       ) : null}
+    </section>
+  );
+}
+
+/** Advanced build only: the person's debugger opt-in for this browser session, and the Standard fallback. */
+function AdvancedSection({ advanced, call }: { advanced: PanelState['advanced']; call: Call }) {
+  const { t } = useI18n();
+  const { error, busy, run } = useRun(call);
+  if (!advanced.available) return null;
+  const set = (next: { enabled: boolean; fallback: boolean }) => void run({ type: 'browser.advanced', ...next });
+  return (
+    <section className="browser-section" aria-label={t('browser.advanced.title')} data-testid="browser-advanced">
+      <span className="section-label">{t('browser.advanced.title')}</span>
+      <label className="browser-check">
+        <input type="checkbox" checked={advanced.enabled} disabled={busy} onChange={(event) => set({ enabled: event.target.checked, fallback: advanced.fallback })} />
+        <span>{t('browser.advanced.enable')}</span>
+      </label>
+      <p className="muted small">{t('browser.advanced.enableHint')}</p>
+      <label className="browser-check">
+        <input type="checkbox" checked={advanced.fallback} disabled={busy || !advanced.enabled} onChange={(event) => set({ enabled: advanced.enabled, fallback: event.target.checked })} />
+        <span>{t('browser.advanced.fallback')}</span>
+      </label>
+      {advanced.enabled && advanced.attached > 0 ? (
+        <p className="muted small" role="status" data-testid="browser-advanced-attached">
+          {t('browser.advanced.attached', { count: advanced.attached })}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="field-error" role="alert">
+          {errorText(t, error)}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/** Tabs agents opened and still control: who, which site, until when. */
+function AgentTabs({ tabs }: { tabs: PanelState['tabs'] }) {
+  const { t, locale } = useI18n();
+  if (!tabs.length) return null;
+  return (
+    <section className="browser-section" aria-label={t('browser.tabs')}>
+      <span className="section-label">{t('browser.tabs')}</span>
+      <ul className="browser-list" data-testid="browser-tabs">
+        {tabs.map((tab) => (
+          <li key={tab.handle} className="browser-row small">
+            <span className="browser-tab-marker" aria-hidden="true">
+              AI
+            </span>
+            <span className="grow truncate">
+              {tab.agentName || t('browser.tabs.agent')}
+              {tab.domain ? <span className="muted"> · {tab.domain}</span> : null}
+            </span>
+            {tab.expiresAt ? <span className="muted">{t('browser.grant.until', { time: formatTime(locale, tab.expiresAt) })}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** The last actions that ended in this browser, newest first. */
+function Timeline({ timeline }: { timeline: PanelState['timeline'] }) {
+  const { t, locale } = useI18n();
+  if (!timeline.length) return null;
+  const clock = (at: number) => {
+    try {
+      return new Intl.DateTimeFormat(locale, { timeStyle: 'medium' }).format(new Date(at));
+    } catch {
+      return '';
+    }
+  };
+  return (
+    <section className="browser-section" aria-label={t('browser.timeline')}>
+      <span className="section-label">{t('browser.timeline')}</span>
+      <ol className="browser-timeline" data-testid="browser-timeline">
+        {timeline.map((entry) => (
+          <li key={entry.id} className={entry.ok ? 'browser-timeline-item' : 'browser-timeline-item failed'}>
+            <span className="muted mono">{clock(entry.at)}</span>
+            <span className="grow truncate">
+              {entry.agentName ? `${entry.agentName} · ` : ''}
+              <span className="mono">{entry.action}</span>
+              {entry.domain ? ` · ${entry.domain}` : ''}
+            </span>
+            <span className={entry.ok ? 'muted' : 'text-danger'}>{entry.ok ? t('browser.timeline.ok') : t('browser.timeline.failed', { code: entry.code ?? '' })}</span>
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }
@@ -258,13 +340,20 @@ export function BrowserControlDrawer({ state, agents, call, onClose }: { state: 
                 {t('error.failed_precondition')}
               </p>
             ) : null}
-            {state.control !== 'active' ? <p className="notice notice-warn">{state.control === 'paused' ? t('browser.control.paused') : t('browser.control.stopped')}</p> : null}
+            {state.control !== 'active' ? (
+              <p className="notice notice-warn" data-testid="browser-control-notice">
+                {controlNotice(t, state)}
+              </p>
+            ) : null}
             <ApprovalCards approvals={state.approvals} call={call} />
+            <AgentTabs tabs={state.tabs} />
+            <Timeline timeline={state.timeline} />
             {state.connection === 'connected' ? (
               <>
                 <DeviceSection device={state.device} call={call} />
                 {state.device ? (
                   <>
+                    <AdvancedSection advanced={state.advanced} call={call} />
                     <GrantList grants={state.grants} agents={agents} call={call} />
                     <GrantForm agents={agents} call={call} />
                   </>
