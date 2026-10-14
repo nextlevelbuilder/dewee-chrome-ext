@@ -22,9 +22,11 @@ function setup(options: { prefs?: DebuggerPrefs; attach?: DriverErrorCode | null
     run: async (_tabId, request) => answer('standard', request),
   };
   let attach: DriverErrorCode | null = options.attach ?? null;
+  let policy: DriverErrorCode | null = null;
   const cdp: AdvancedEngine = {
     attachedTabs: [],
     prepare: vi.fn(async () => attach),
+    policy: vi.fn(async () => policy),
     run: vi.fn(async (_tabId: number, request: DriverRequest) => (attach ? { ok: false, code: attach } : answer('cdp', request)) as DriverResponse),
     release: vi.fn(async () => undefined),
     forget: vi.fn(),
@@ -34,7 +36,14 @@ function setup(options: { prefs?: DebuggerPrefs; attach?: DriverErrorCode | null
   };
   let prefs: DebuggerPrefs = options.prefs ?? { enabled: true, fallback: true };
   const router = new EngineRouter(standard, () => prefs, options.withCdp === false ? undefined : cdp);
-  return { router, log, cdp, setPrefs: (next: DebuggerPrefs) => (prefs = next), setAttach: (code: DriverErrorCode | null) => (attach = code) };
+  return {
+    router,
+    log,
+    cdp,
+    setPrefs: (next: DebuggerPrefs) => (prefs = next),
+    setAttach: (code: DriverErrorCode | null) => (attach = code),
+    setPolicy: (code: DriverErrorCode | null) => (policy = code),
+  };
 }
 
 describe('EngineRouter', () => {
@@ -98,6 +107,24 @@ describe('EngineRouter', () => {
     await t.router.run(1, { op: 'snapshot', origins, generation: 1, maxChars: 100 });
     t.setAttach('debugger_unavailable');
     await expect(t.router.run(1, { op: 'describe', origins, generation: 1, ref: 'e1' })).resolves.toEqual({ ok: false, code: 'stale_ref' });
+  });
+
+  it('does not fall back once the command was cancelled or the policy now refuses', async () => {
+    const t = setup({ attach: 'debugger_unavailable' });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(t.router.run(1, { op: 'press', origins, key: 'Enter' }, cancelled.signal)).resolves.toEqual({ ok: false, code: 'cancelled' });
+    await expect(t.router.run(1, { op: 'snapshot', origins, generation: 1, maxChars: 100 }, cancelled.signal)).resolves.toEqual({ ok: false, code: 'cancelled' });
+    for (const code of ['device_paused', 'grant_revoked', 'grant_expired'] as const) {
+      t.setPolicy(code);
+      await expect(t.router.run(1, { op: 'press', origins, key: 'Enter' })).resolves.toEqual({ ok: false, code });
+      await expect(t.router.run(1, { op: 'snapshot', origins, generation: 1, maxChars: 100 })).resolves.toEqual({ ok: false, code });
+    }
+    expect(t.log).toEqual([]);
+    // A real conflict under a still-valid policy does fall back.
+    t.setPolicy(null);
+    await t.router.run(1, { op: 'press', origins, key: 'Tab' }, new AbortController().signal);
+    expect(t.log).toEqual(['standard:press']);
   });
 
   it('never falls back on a policy refusal', async () => {

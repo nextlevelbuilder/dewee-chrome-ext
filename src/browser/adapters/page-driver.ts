@@ -33,6 +33,7 @@ export type DriverErrorCode = Extract<
   | 'tab_not_owned'
   | 'tab_closed'
   | 'timeout'
+  | 'cancelled'
   | 'internal'
 >;
 

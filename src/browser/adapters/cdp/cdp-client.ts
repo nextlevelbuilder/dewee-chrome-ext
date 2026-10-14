@@ -165,17 +165,28 @@ export class CdpClient {
     const attaching = (async () => {
       const refused = await this.deps.check(tabId, 'attach');
       if (refused) throw new CdpFailure(refused, true);
+      const chromeAttach = this.deps.debugger.attach({ tabId }, CDP_VERSION);
       try {
-        await withTimeout(this.deps.debugger.attach({ tabId }, CDP_VERSION), this.timeoutMs);
+        await withTimeout(chromeAttach, this.timeoutMs);
       } catch (error) {
+        // Chrome may still complete an attach it did not answer in time: let go of it then, so the
+        // tab is not left attached without this client knowing.
+        if (error instanceof CdpFailure && error.code === 'timeout') {
+          chromeAttach.then(
+            () => this.deps.debugger.detach({ tabId }).catch(() => undefined),
+            () => undefined,
+          );
+        }
         // DevTools or another extension holds the tab, the page is one Chrome never lets extensions
         // debug, or the tab went away.
         throw new CdpFailure('debugger_unavailable', true, error instanceof Error ? error.message : '');
       }
-      // Pause, Stop, revoke or opt-out asked to let go while Chrome was attaching: do it now.
+      // Pause, Stop, revoke or opt-out asked to let go while Chrome was attaching: do it now, and
+      // answer with the policy's own reason. This is never `debugger_unavailable`, which would let
+      // the command continue the Standard way.
       if (this.detachRequested.delete(tabId)) {
         await this.deps.debugger.detach({ tabId }).catch(() => undefined);
-        throw new CdpFailure('debugger_unavailable', true, 'detached while attaching');
+        throw new CdpFailure((await this.policy(tabId)) ?? 'cancelled', true, 'detached while attaching');
       }
       this.attached.add(tabId);
       this.deps.onChange?.();
@@ -185,6 +196,15 @@ export class CdpClient {
       await attaching;
     } finally {
       this.pending.delete(tabId);
+    }
+  }
+
+  /** The policy for the tab right now, looked up afresh; a check that fails counts as cancelled. */
+  async policy(tabId: number): Promise<DriverErrorCode | null> {
+    try {
+      return await this.deps.check(tabId, 'attach');
+    } catch {
+      return 'cancelled';
     }
   }
 

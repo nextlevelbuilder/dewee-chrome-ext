@@ -149,6 +149,17 @@ test('reads and acts inside a same-site frame, and leaves a cross-site frame out
   expect(await run('screenshot', { tab: 't1' })).toMatchObject({ ok: true });
 });
 
+test('presses keys in a background agent tab where nothing has focus', async ({ serviceWorker, openPanel }) => {
+  await connectAdvanced(serviceWorker, openPanel);
+  await openSite();
+  const tabId = await siteTabId(serviceWorker);
+  // Agent tabs open in the background; nothing on the page was focused.
+  expect(await serviceWorker.evaluate(async (id) => (await chrome.tabs.get(id)).active, tabId)).toBe(false);
+  expect(await run('press', { tab: 't1', key: 'PageDown' })).toMatchObject({ ok: true });
+  expect(await run('press', { tab: 't1', key: 'Escape' })).toMatchObject({ ok: true });
+  await expect.poll(() => siteAttached(serviceWorker)).toBe(false);
+});
+
 test('sends no key while focus is inside a cross-site frame', async ({ serviceWorker, openPanel, context }) => {
   await connectAdvanced(serviceWorker, openPanel);
   await openSite('/frames', 'E2E Frames');

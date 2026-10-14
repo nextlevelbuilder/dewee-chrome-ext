@@ -1,6 +1,9 @@
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { writeCredential } from '@/auth/credential-store';
 import type { CdpAdapterOptions } from '@/browser/adapters/cdp';
+import { CdpAdapter } from '@/browser/adapters/cdp/cdp-adapter';
+import { CdpClient, type DebuggerApi } from '@/browser/adapters/cdp/cdp-client';
+import type { ImageCodec } from '@/browser/adapters/cdp/screenshot';
 import type { DriverRequest, DriverResponse } from '@/browser/adapters/page-driver';
 import type { BrowserApi, TabInfo } from '@/browser/chrome-api';
 import type { AdvancedEngine } from '@/browser/engine-router';
@@ -45,6 +48,9 @@ class FakeEngine implements AdvancedEngine {
     if (request.op === 'snapshot') return { ok: true, op: 'snapshot', text: '[e1] button "Next"', url: `${ORIGIN}/`, title: 'Shop' };
     return { ok: true, op: request.op } as DriverResponse;
   }
+  policy(tabId: number) {
+    return this.options.check(tabId, 'attach');
+  }
   async release(tabId: number) {
     this.calls.push(`release:${tabId}`);
     this.attached.delete(tabId);
@@ -64,7 +70,7 @@ class FakeEngine implements AdvancedEngine {
   }
 }
 
-function setup(options: { advanced?: boolean; grant?: Grant } = {}) {
+function setup(options: { advanced?: boolean; grant?: Grant; engine?: (options: CdpAdapterOptions) => AdvancedEngine } = {}) {
   const clock = { now: NOW };
   const liveGrant = options.grant ?? grant();
   const tabs = new Map<number, TabInfo>();
@@ -101,7 +107,7 @@ function setup(options: { advanced?: boolean; grant?: Grant } = {}) {
   const session = new BrowserSession({
     api,
     action,
-    cdp: options.advanced === false ? null : (opts) => (engine = new FakeEngine(opts)),
+    cdp: options.advanced === false ? null : (options.engine ?? ((opts) => (engine = new FakeEngine(opts)))),
     token: async () => 'key',
     random: () => 0.5,
     now: () => clock.now,
@@ -323,6 +329,51 @@ describe('BrowserSession: Advanced build', () => {
     expect(t.badges).toContain('40:reset');
     expect(t.session.state().tabs).toEqual([]);
   });
+
+  for (const [action, params] of [
+    ['press', { tab: 't1', key: 'Tab' }],
+    ['snapshot', { tab: 't1' }],
+  ] as const) {
+    it(`never lets a ${action} continue the Standard way when Pause lands while the debugger attaches`, async () => {
+      let finishAttach: () => void = () => undefined;
+      const debuggerApi: DebuggerApi = {
+        attach: vi.fn(() => new Promise<void>((resolve) => (finishAttach = resolve))),
+        detach: vi.fn(async () => undefined),
+        sendCommand: vi.fn(async () => ({})),
+        onDetach: { addListener: () => undefined },
+      };
+      const codec: ImageCodec = { decode: async () => ({ width: 1, height: 1 }), encode: async () => new Uint8Array() };
+      const t = setup({
+        engine: (opts) => new CdpAdapter({ client: new CdpClient({ debugger: debuggerApi, check: opts.check, onDetached: opts.onDetached, onChange: opts.onChange }), codec }),
+      });
+      await t.ready();
+      await t.command('open', { url: `${ORIGIN}/` });
+      await t.enable(true);
+      const standardRun = t.api.run.bind(t.api);
+      // The executor asks the page script what has focus before every key.
+      const pageRuns = vi
+        .spyOn(t.api, 'run')
+        .mockImplementation(async (tabId, request, signal) =>
+          request.op === 'focused' ? { ok: true, op: 'describe', role: 'button', name: 'Next', sensitive: false, editable: false } : standardRun(tabId, request, signal),
+        );
+
+      const before = t.socket().methods().filter((m) => m === 'browser.command.result').length;
+      t.socket().event('browser.command', payload(action, params));
+      await vi.waitFor(() => expect(debuggerApi.attach).toHaveBeenCalled());
+      void t.session.handleRequest({ type: 'browser.control', state: 'paused' });
+      await flush();
+      finishAttach();
+      await vi.waitFor(() => expect(t.socket().methods().filter((m) => m === 'browser.command.result').length).toBe(before + 1), { timeout: 3000 });
+
+      expect(t.socket().last('browser.command.result').params).toMatchObject({ ok: false });
+      // The result may go out at the cancel; the attach that completes after it is let go of.
+      await vi.waitFor(() => expect(debuggerApi.detach).toHaveBeenCalledWith({ tabId: 40 }));
+      await flush();
+      expect(debuggerApi.sendCommand).not.toHaveBeenCalled();
+      // Nothing went the Standard way after the attach was asked for.
+      expect(pageRuns.mock.calls.map(([, request]) => request.op).filter((op) => op === 'press' || op === 'snapshot')).toEqual([]);
+    });
+  }
 
   it('detaches from the grant’s tabs when it expires, without waiting for the next command', async () => {
     const t = setup({ grant: grant({ expires_at: new Date(NOW + 800).toISOString() }) });

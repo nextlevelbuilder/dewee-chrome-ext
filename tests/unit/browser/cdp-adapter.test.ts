@@ -80,8 +80,11 @@ function page(options: PageOptions = {}) {
   return { frames, dom, main, inner };
 }
 
-/** Where focus is: a backend node id, `'document'` (the main page itself) or `'elsewhere'` (an out-of-process frame no tree shows). */
-type Focus = number | 'document' | 'elsewhere';
+/**
+ * Where focus is: a backend node id, `'document'` (the main page itself), `'elsewhere'` (an
+ * out-of-process frame no tree shows) or `'none'` (a background tab: Chrome marks nothing focused).
+ */
+type Focus = number | 'document' | 'elsewhere' | 'none';
 
 interface SetupOptions extends PageOptions {
   refuse?: () => DriverErrorCode | null;
@@ -93,6 +96,10 @@ interface SetupOptions extends PageOptions {
   focusMovesTo?: (backend: number) => number;
   /** Fails (throws Chrome's error text) for a method, optionally only for some params. */
   failOn?: (method: string, params: Record<string, unknown>) => string | null;
+  /** The cross-site ad frame's tree can be read (it runs in the page's process). */
+  adsReadable?: boolean;
+  /** Called on every command sent to Chrome, before it is answered. */
+  onSend?: (method: string) => void;
   /** The visual viewport each `Page.getLayoutMetrics` call reports (the call count starts at 1). */
   viewport?: (call: number) => { pageX: number; pageY: number };
 }
@@ -125,7 +132,10 @@ function setup(options: SetupOptions = {}) {
         return { root: p.dom() };
       case 'Accessibility.getFullAXTree':
         if (params.frameId === 'F2') return { nodes: withFocus(p.inner, 20) };
-        if (params.frameId === 'F3') throw new Error('Frame with the given id was not found.');
+        if (params.frameId === 'F3') {
+          if (options.adsReadable) return { nodes: [] };
+          throw new Error('Frame with the given id was not found.');
+        }
         return { nodes: withFocus(p.main, 1) };
       case 'Accessibility.getPartialAXTree': {
         const all = [...p.main, ...p.inner];
@@ -178,6 +188,7 @@ function setup(options: SetupOptions = {}) {
     detach: vi.fn(async () => undefined),
     sendCommand: vi.fn(async (_target, method, params) => {
       sent.push({ method, params });
+      options.onSend?.(method);
       return reply(method, params);
     }),
     onDetach: { addListener: () => undefined },
@@ -403,6 +414,49 @@ describe('CdpAdapter: click, type and press', () => {
     const owner = setup({ focus: 9 });
     await expect(owner.adapter.run(1, { op: 'press', origins, key: 'Enter' })).resolves.toEqual({ ok: false, code: 'origin_not_granted' });
     expect(owner.inputs()).toEqual([]);
+  });
+
+  it('sends keys to the main document when every frame was read and none shows focus (a background tab)', async () => {
+    const t = setup({ focus: 'none', adsReadable: true });
+    await expect(t.adapter.run(1, { op: 'press', origins, key: 'PageDown' })).resolves.toEqual({ ok: true, op: 'press' });
+    expect(t.inputs().map((s) => s.params?.type)).toEqual(['rawKeyDown', 'keyUp']);
+    expect(t.sent.filter((s) => s.method === 'Accessibility.getFullAXTree').map((s) => s.params?.frameId)).toEqual([undefined, 'F2', 'F3']);
+    // Still only on a granted page.
+    await expect(t.adapter.run(1, { op: 'press', origins: ['https://other.example.test'], key: 'PageDown' })).resolves.toEqual({ ok: false, code: 'origin_not_granted' });
+
+    // A frame that could not be read may hold focus: refused.
+    const unread = setup({ focus: 'none' });
+    await expect(unread.adapter.run(1, { op: 'press', origins, key: 'PageDown' })).resolves.toEqual({ ok: false, code: 'origin_not_granted' });
+    expect(unread.inputs()).toEqual([]);
+  });
+
+  it('takes input on the tab for its own only while Input commands are sent, not during the reads around them', async () => {
+    const during: Array<[string, boolean]> = [];
+    const hooks = { adapter: null as CdpAdapter | null, now: 1_000, setNow: null as ((value: number) => unknown) | null };
+    const t = setup({
+      focus: 5,
+      onSend: (method) => {
+        // Each focus read takes longer than the grace window after a key (a heavy page).
+        if (method === 'Accessibility.getFullAXTree') hooks.setNow?.((hooks.now += DISPATCH_GRACE_MS + 1));
+        during.push([method, hooks.adapter?.isDispatching(1) ?? false]);
+      },
+    });
+    hooks.adapter = t.adapter;
+    hooks.setNow = t.setNow;
+    await snapshot(t);
+    during.length = 0;
+    await expect(t.adapter.run(1, { op: 'type', origins, generation: 1, ref: 'e1', text: 'ada', submit: true })).resolves.toEqual({ ok: true, op: 'type' });
+    const input = during.filter(([method]) => method.startsWith('Input.'));
+    expect(input.map(([method]) => method)).toEqual(['Input.dispatchKeyEvent', 'Input.dispatchKeyEvent', 'Input.insertText', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
+    expect(input.every(([, dispatching]) => dispatching)).toBe(true);
+    // The focus checks before the text and before Enter are the person's time: their input there takes the tab back.
+    const reads = during.filter(([method]) => method === 'DOM.focus' || method === 'Accessibility.getFullAXTree');
+    expect(reads.length).toBeGreaterThan(2);
+    expect(reads.every(([, dispatching]) => !dispatching)).toBe(true);
+    // After the last key, the short grace window still covers the page's reaction.
+    expect(t.adapter.isDispatching(1)).toBe(true);
+    t.setNow(hooks.now + DISPATCH_GRACE_MS + 1);
+    expect(t.adapter.isDispatching(1)).toBe(false);
   });
 
   it('sends no key to a secret field in a shadow root or in a granted frame', async () => {

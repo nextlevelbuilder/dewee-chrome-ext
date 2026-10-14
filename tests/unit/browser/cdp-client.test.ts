@@ -131,10 +131,14 @@ describe('CdpClient', () => {
     t.fake.api.attach.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
     const attaching = t.instance.attach(1);
     await vi.waitFor(() => expect(t.fake.api.attach).toHaveBeenCalled());
+    // Pause: the policy now refuses, and the detach is asked for.
+    t.refuse('device_paused');
     await t.instance.detach(1);
     expect(t.fake.api.detach).not.toHaveBeenCalled();
     finish();
-    await expect(attaching).rejects.toMatchObject({ code: 'debugger_unavailable', beforeEffect: true });
+    // The policy's own reason, never debugger_unavailable (which would let Standard take over).
+    await expect(attaching).rejects.toMatchObject({ code: 'device_paused', beforeEffect: true });
+    t.refuse(null);
     expect(t.fake.api.detach).toHaveBeenCalledWith({ tabId: 1 });
     expect(t.instance.isAttached(1)).toBe(false);
     // A later attach is not affected.
@@ -150,8 +154,27 @@ describe('CdpClient', () => {
     await vi.waitFor(() => expect(t.fake.api.attach).toHaveBeenCalled());
     await t.instance.detachAll();
     finish();
-    await expect(attaching).rejects.toMatchObject({ code: 'debugger_unavailable' });
+    // The policy still allows the tab (a command ended, say): the attach answers cancelled.
+    await expect(attaching).rejects.toMatchObject({ code: 'cancelled' });
     expect(t.instance.attachedTabs).toEqual([]);
+  });
+
+  it('lets go of an attach Chrome completes after it timed out', async () => {
+    const t = client({ timeoutMs: 20 });
+    let finish: () => void = () => undefined;
+    t.fake.api.attach.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+    await expect(t.instance.attach(1)).rejects.toMatchObject({ code: 'debugger_unavailable', beforeEffect: true });
+    expect(t.fake.api.detach).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(t.fake.api.detach).toHaveBeenCalledWith({ tabId: 1 }));
+    expect(t.instance.isAttached(1)).toBe(false);
+  });
+
+  it('does not detach when Chrome refused the attach (another debugger holds the tab)', async () => {
+    const t = client({ attachError: 'Another debugger is already attached to the tab with id: 1.' });
+    await expect(t.instance.attach(1)).rejects.toMatchObject({ code: 'debugger_unavailable' });
+    await Promise.resolve();
+    expect(t.fake.api.detach).not.toHaveBeenCalled();
   });
 
   it('tells the policy check whether it runs for an attach or a command', async () => {

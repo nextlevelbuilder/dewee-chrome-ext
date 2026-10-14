@@ -137,6 +137,11 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     }
   }
 
+  /** The local policy for the tab right now (null when the debugger or Standard may act there). */
+  policy(tabId: number): Promise<DriverErrorCode | null> {
+    return this.deps.client.policy(tabId);
+  }
+
   async release(tabId: number): Promise<void> {
     this.overlay.delete(tabId);
     await this.deps.client.detach(tabId);
@@ -209,12 +214,10 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
         await this.axNode(tabId, target);
         const point = await this.reachable(tabId, target);
         await this.hideHighlight(tabId);
-        await this.input(tabId, async () => {
-          const base = { x: point.x, y: point.y, button: 'left', clickCount: 1 };
-          await this.dispatch(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-          await this.dispatch(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', buttons: 1 });
-          await this.dispatch(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased', buttons: 0 });
-        });
+        const base = { x: point.x, y: point.y, button: 'left', clickCount: 1 };
+        await this.dispatch(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+        await this.dispatch(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', buttons: 1 });
+        await this.dispatch(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased', buttons: 0 });
         return { ok: true, op: 'click' };
       }
       case 'type': {
@@ -224,25 +227,23 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
         if (isSensitiveNode(dom)) return fail('sensitive_field');
         if (!isEditableNode(dom)) return fail('element_not_interactable');
         await this.reachable(tabId, target);
-        await this.input(tabId, async () => {
-          await this.send(tabId, 'DOM.focus', { backendNodeId: target.backend });
-          // A focus handler may have moved focus (to a password field, say): type only into the element itself.
+        await this.send(tabId, 'DOM.focus', { backendNodeId: target.backend });
+        // A focus handler may have moved focus (to a password field, say): type only into the element itself.
+        await this.expectFocus(tabId, request.origins, target);
+        // Replace what is there, like the Standard adapter: select all, then insert (or delete).
+        await this.key(tabId, { key: 'a', code: 'KeyA', keyCode: 65 }, ['selectAll']);
+        if (request.text) await this.dispatch(tabId, 'Input.insertText', { text: request.text });
+        else await this.key(tabId, { key: 'Delete', code: 'Delete', keyCode: 46 });
+        if (request.submit) {
           await this.expectFocus(tabId, request.origins, target);
-          // Replace what is there, like the Standard adapter: select all, then insert (or delete).
-          await this.key(tabId, { key: 'a', code: 'KeyA', keyCode: 65 }, ['selectAll']);
-          if (request.text) await this.dispatch(tabId, 'Input.insertText', { text: request.text });
-          else await this.key(tabId, { key: 'Delete', code: 'Delete', keyCode: 46 });
-          if (request.submit) {
-            await this.expectFocus(tabId, request.origins, target);
-            await this.key(tabId, KEYS.Enter);
-          }
-        });
+          await this.key(tabId, KEYS.Enter);
+        }
         return { ok: true, op: 'type' };
       }
       case 'press': {
         const frames = await this.frames(tabId);
         await this.keyTarget(tabId, request.origins, frames);
-        await this.input(tabId, () => this.key(tabId, KEYS[request.key]));
+        await this.key(tabId, KEYS[request.key]);
         return { ok: true, op: 'press' };
       }
       case 'screenshot':
@@ -260,15 +261,24 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     return this.deps.client.send<T>(tabId, method, params, { signal: this.runs.get(tabId)?.signal });
   }
 
-  /** An input step: once it passed the policy check and goes to Chrome, the page may change. */
-  private dispatch(tabId: number, method: CdpMethod, params: Record<string, unknown>): Promise<unknown> {
+  /**
+   * An input step: once it passed the policy check and goes to Chrome, the page may change. Only
+   * while it is sent (and shortly after) is input on the tab taken for the adapter's own, so the
+   * person's clicks and keys during the reads in between still take the tab back.
+   */
+  private async dispatch(tabId: number, method: CdpMethod, params: Record<string, unknown>): Promise<unknown> {
     const state = this.runs.get(tabId);
-    return this.deps.client.send(tabId, method, params, {
-      signal: state?.signal,
-      onDispatch: () => {
-        if (state) state.effect = true;
-      },
-    });
+    this.dispatching.set(tabId, Number.POSITIVE_INFINITY);
+    try {
+      return await this.deps.client.send(tabId, method, params, {
+        signal: state?.signal,
+        onDispatch: () => {
+          if (state) state.effect = true;
+        },
+      });
+    } finally {
+      this.dispatching.set(tabId, this.now() + DISPATCH_GRACE_MS);
+    }
   }
 
   // ---------- Refs ----------
@@ -396,11 +406,13 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   /**
    * Where keyboard input would go now, from the `focused` state of the accessibility trees (they
    * see into shadow roots, open or closed): the focused node and its frame, a frame whose document
-   * itself has focus, or null when no readable tree holds focus (an out-of-process frame does).
+   * itself has focus, the main document when every tree was read and none shows focus, or null
+   * when a frame could not be read (an out-of-process frame may hold focus).
    */
   private async focus(tabId: number, frames: Frames): Promise<{ frame: string; node?: AXNode } | null> {
     const others = [...frames.origins.keys()].filter((id) => id !== frames.main);
     let documentFocus: string | null = null;
+    let unread = others.length > MAX_FRAMES;
     for (const frame of [frames.main, ...others.slice(0, MAX_FRAMES)]) {
       let nodes: AXNode[];
       try {
@@ -408,6 +420,7 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
       } catch (error) {
         // A frame this session cannot read is skipped; if focus is there, nothing below finds it.
         if (frame === frames.main || !(error instanceof CdpFailure) || error.code !== 'internal') throw error;
+        unread = true;
         continue;
       }
       const focused = nodes.filter(isFocused);
@@ -417,8 +430,12 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
       // The main document itself has focus: no frame holds it.
       if (documentFocus === frames.main) return { frame: frames.main };
     }
-    if (others.length > MAX_FRAMES) return null;
-    return documentFocus === null ? null : { frame: documentFocus };
+    if (documentFocus !== null) return { frame: documentFocus };
+    // Chrome marks nothing focused in a tab or window that is not active (agent tabs open in the
+    // background). When every frame was read, no frame holds focus: keys go to the main document.
+    // When a frame could not be read, focus may be there, so the key is refused.
+    if (unread) return null;
+    return { frame: frames.main };
   }
 
   /**
@@ -447,15 +464,6 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   }
 
   // ---------- Input ----------
-
-  private async input(tabId: number, send: () => Promise<void>): Promise<void> {
-    this.dispatching.set(tabId, Number.POSITIVE_INFINITY);
-    try {
-      await send();
-    } finally {
-      this.dispatching.set(tabId, this.now() + DISPATCH_GRACE_MS);
-    }
-  }
 
   private async key(tabId: number, key: { key: string; code: string; keyCode: number; text?: string }, commands?: string[]): Promise<void> {
     const base = { key: key.key, code: key.code, windowsVirtualKeyCode: key.keyCode, nativeVirtualKeyCode: key.keyCode };

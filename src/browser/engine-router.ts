@@ -6,7 +6,8 @@
  *   never resolved by the other adapter: when the engine changes, the executor gets `stale_ref`,
  *   moves the generation and snapshots again.
  * - When Chrome refuses to attach (DevTools or another debugger holds the tab), snapshot and press
- *   use Standard if the person allowed fallback. A `describe` of a debugger ref then answers
+ *   use Standard if the person allowed fallback, the command is not cancelled and the local policy
+ *   still allows it. An attach ended by Pause, Stop, revoke, expiry or opt-out never falls back. A `describe` of a debugger ref then answers
  *   `stale_ref`; the executor describes before every click and type, so the agent snapshots again
  *   and gets Standard refs. A later step of the same command that cannot attach (highlight, click,
  *   type) ends with `debugger_unavailable`, as does any command without fallback. Screenshots
@@ -26,6 +27,8 @@ export interface DebuggerPrefs {
 /** The Advanced adapter as the router sees it (see adapters/cdp/cdp-adapter.ts). */
 export interface AdvancedEngine extends PageDriver {
   prepare(tabId: number): Promise<DriverErrorCode | null>;
+  /** The local policy for the tab right now: null when allowed, otherwise the refusal. */
+  policy(tabId: number): Promise<DriverErrorCode | null>;
   release(tabId: number): Promise<void>;
   forget(tabId: number): void;
   forceDetach(tabId: number): Promise<void>;
@@ -90,7 +93,7 @@ export class EngineRouter implements BrowserApi {
         if (!cdp || !prefs.enabled) return fail('unsupported_capability');
         return cdp.run(tabId, request, signal);
       case 'snapshot': {
-        const engine = await this.choose(tabId, prefs);
+        const engine = await this.choose(tabId, prefs, signal);
         if (typeof engine !== 'string') return engine;
         // Refs of this generation came from the other adapter: start a new generation instead.
         const issued = this.issued.get(tabId);
@@ -100,7 +103,7 @@ export class EngineRouter implements BrowserApi {
         return response;
       }
       case 'press': {
-        const engine = await this.choose(tabId, prefs);
+        const engine = await this.choose(tabId, prefs, signal);
         if (typeof engine !== 'string') return engine;
         return engine === 'cdp' && cdp ? cdp.run(tabId, request, signal) : this.standard.run(tabId, request, signal);
       }
@@ -147,12 +150,20 @@ export class EngineRouter implements BrowserApi {
     return this.cdp?.isDispatching(tabId) ?? false;
   }
 
-  /** Debugger when it is on and attaches; Standard when it is off, or cannot attach and fallback is allowed. */
-  private async choose(tabId: number, prefs: DebuggerPrefs): Promise<Engine | DriverResponse> {
+  /**
+   * Debugger when it is on and attaches; Standard when it is off, or when another debugger holds the
+   * tab and fallback is allowed. The fallback is only for that conflict: not once the command was
+   * cancelled, and not when the policy (Pause, Stop, grant, opt-in, page origin) now refuses.
+   */
+  private async choose(tabId: number, prefs: DebuggerPrefs, signal?: AbortSignal): Promise<Engine | DriverResponse> {
     if (!this.cdp || !prefs.enabled) return 'standard';
     const refused = await this.cdp.prepare(tabId);
     if (!refused) return 'cdp';
-    if (refused === 'debugger_unavailable' && prefs.fallback) return 'standard';
-    return fail(refused);
+    if (refused !== 'debugger_unavailable' || !prefs.fallback) return fail(refused);
+    if (signal?.aborted) return fail('cancelled');
+    const policy = await this.cdp.policy(tabId);
+    if (policy) return fail(policy);
+    if (signal?.aborted) return fail('cancelled');
+    return 'standard';
   }
 }
