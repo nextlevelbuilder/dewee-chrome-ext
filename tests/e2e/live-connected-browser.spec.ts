@@ -190,8 +190,15 @@ test('an agent drives the person’s own Chrome only as far as the person allows
     deviceId = await deviceIdOf(serviceWorker);
   });
 
-  await test.step('a grant for another agent does not let Super Agent in', async () => {
-    await allow(panel, 'E2E Helper', siteOrigin);
+  await test.step('an agent the person does not own cannot be allowed, and Super Agent stays out', async () => {
+    // Setup creates E2E Helper as the system actor, so for the person it is an agent someone else shared.
+    const drawer = await openDrawer(panel);
+    await drawer.getByRole('checkbox', { name: 'E2E Helper' }).check();
+    await drawer.getByLabel('Sites, one per line').fill(siteOrigin);
+    await drawer.getByRole('button', { name: 'Allow', exact: true }).click();
+    await expect(drawer.getByRole('alert')).toContainText('only your own agents');
+    await expect(drawer.getByTestId('browser-grants').locator('li')).toHaveCount(0);
+    await drawer.getByRole('checkbox', { name: 'E2E Helper' }).uncheck();
     await closeDrawer(panel);
     const [result] = await ask(panel, 'cb other agent', [browserCall({ action: 'open', targetUrl: `${siteOrigin}/account` })]);
     expect(result).toContain('connected browser error [no_grant]');
@@ -297,17 +304,25 @@ test('an agent drives the person’s own Chrome only as far as the person allows
     const device = listDevices().find((item) => item.id === deviceId);
     expect(device).toMatchObject({ id: deviceId, online: true });
     const grants = JSON.parse(cli(['browser', 'grants', 'list', '--device', deviceId, '--json'], 'personal')) as { agent_ids: string[]; origins: string[] }[];
-    expect(grants.length).toBe(2);
+    expect(grants.length).toBe(1);
     for (const grant of grants) expect(grant.origins).toEqual([siteOrigin]);
 
     const session = await rememberedSession(serviceWorker);
-    const listed = cli(['traces', 'list', '--session', session, '--limit', '50', '-o', 'json'], 'admin');
-    const ids = [...new Set([...listed.matchAll(/"id":\s*"([0-9a-f-]{36})"/g)].map((match) => match[1] ?? ''))].filter(Boolean);
-    expect(ids.length).toBeGreaterThan(0);
-    const spans = ids.flatMap((id) => browserSpans(JSON.parse(cli(['traces', 'get', id, '-o', 'json'], 'admin'))));
+    const readSpans = () => {
+      const listed = cli(['traces', 'list', '--session', session, '--limit', '50', '-o', 'json'], 'admin');
+      const ids = [...new Set([...listed.matchAll(/"id":\s*"([0-9a-f-]{36})"/g)].map((match) => match[1] ?? ''))].filter(Boolean);
+      return ids.flatMap((id) => browserSpans(JSON.parse(cli(['traces', 'get', id, '-o', 'json'], 'admin'))));
+    };
+    // Spans are written after the turn ends, so the last turn's spans may still be on their way.
+    let spans = readSpans();
+    await expect
+      .poll(() => {
+        spans = readSpans();
+        return spans.some((span) => metaOf(span).includes('approval_denied'));
+      }, { timeout: 15_000 })
+      .toBe(true);
     const actions = spans.map(metaOf);
     for (const action of ['open', 'snapshot', 'click', 'type']) expect(actions.some((m) => m.includes(`"browser_action":"${action}"`))).toBe(true);
-    expect(actions.some((m) => m.includes('approval_denied'))).toBe(true);
     // Browser span inputs are redacted, and an action span carries no typed text at all. Only a
     // snapshot's output may show the text, because the page shows it.
     for (const span of spans) {

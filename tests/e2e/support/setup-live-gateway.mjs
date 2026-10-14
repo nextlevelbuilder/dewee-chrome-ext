@@ -73,6 +73,11 @@ if (otherConfig.setup_operator !== true) {
 }
 console.log('agent super-agent: setup operator');
 
+// As in a real workspace, the Super Agent is the default agent. Setup creates both agents as the system
+// actor, so for the owner e2e-helper is someone else's agent and the connected browser refuses to grant it.
+if (superAgent.is_default !== true) await admin('PUT', `/v1/agents/${superAgent.id}`, { is_default: true }, tenant.id);
+console.log('agent super-agent: workspace default');
+
 // The personal key goes straight from the CLI's JSON output into .env; it is never printed.
 const created = JSON.parse(
   execFileSync(
