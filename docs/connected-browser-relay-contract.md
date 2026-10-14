@@ -33,9 +33,13 @@ loopback) and sends the standard first frame:
 {"type":"req","id":"1","method":"connect","params":{"token":"<personal API key>","client":"dewee-chrome-ext","version":"<ext version>"}}
 ```
 
-Only owner-bound API keys with `operator.write` may use `browser.device.*`. The
-gateway master token and pairing-code connections are refused with
-`PERMISSION_DENIED`.
+Only API keys with `operator.write` that are bound to one user by credential may
+use the `browser.*` relay methods. The gateway master token, unbound keys,
+pairing-code connections and customer principals are refused with
+`UNAUTHORIZED` (the Gateway protocol's code for a caller that is not allowed).
+When the tenant has not enabled the feature, every method returns
+`FAILED_PRECONDITION`. Bad params are `INVALID_REQUEST`, another user's device or
+grant is `NOT_FOUND`, and limits are `RESOURCE_EXHAUSTED`.
 
 Keepalive: the extension sends `browser.device.heartbeat` every 20 s (this also
 keeps the MV3 worker alive, Chrome 116+). A device is offline 45 s after its last
@@ -59,11 +63,30 @@ All params are strict objects; unknown fields are rejected.
 | `browser.grant.revoke` | `{grant_id}` | `{}`; in-flight commands under it are cancelled. |
 | `browser.command.ack` | `{command_id}` | `{}`; the extension accepted the command and is executing it. |
 | `browser.command.result` | `{command_id, ok:true, result}` or `{command_id, ok:false, error:{code, message}}` | `{}` |
-| `browser.control.state` | `{device_id, state:"active" \| "paused" \| "stopped"}` | `{}`; local Pause/Stop. While not `active` the Gateway refuses new commands with `device_paused`. |
+| `browser.control.state` | `{device_id, state:"active" \| "paused" \| "stopped"}` | `{}`; local Pause/Stop. Both `paused` and `stopped` cancel in-flight commands (the extension cancels them locally and may send no result). While not `active` the Gateway refuses new commands with `device_paused`. |
 
 Limits: `ttl_seconds` 60–28800 (default 3600); ≤ 20 origins and ≤ 20 agents per
-grant; origins are exact `scheme://host[:port]` (https, or http only for
-loopback); no wildcards in v1.
+grant; origins are exact canonical `scheme://host[:port]`: lowercase, https (or
+http only for loopback), no default port, path, trailing slash or wildcard, no
+repeats. A non-canonical origin is refused (`INVALID_REQUEST`), never rewritten.
+At most 10 devices per user and 20 active grants per device.
+`browser.grant.create` is accepted only from the device's own attached socket.
+
+Object shapes (every field always present unless marked optional):
+
+```json
+Grant  {"id":"<uuid>", "device_id":"<uuid>", "agent_ids":["<uuid>"],
+        "origins":["https://example.com"], "capabilities":["browser.read"],
+        "created_at":"<RFC3339>", "expires_at":"<RFC3339>"}
+Device {"id":"<uuid>", "name":"...", "platform":"...", "capabilities":["standard"],
+        "created_at":"<RFC3339>", "last_seen_at?":"<RFC3339>", "online":true,
+        "state?":"active|paused|stopped"}
+```
+
+`grant.create` returns exactly the requested origins, in request order.
+`attach`, `grant.create` and `grant.list` return active grants only. The
+extension ignores a grant without `device_id` or whose origins differ from what
+the person approved.
 
 ## Event (Gateway → extension)
 
@@ -82,6 +105,10 @@ Events `browser.command.cancel` `{command_id}` and `browser.grant.revoked`
 The extension must `ack` within 5 s or the Gateway fails the command with
 `device_unresponsive` (safe: not executed). After `ack`, a missing result by the
 deadline yields `outcome_unknown` for `interact` actions and `timeout` for reads.
+The extension does not queue results across reconnects: when the socket drops
+after `ack`, the Gateway reports `outcome_unknown` (interact) or `cancelled`
+(read) and never re-sends the command. `agent_name` carries the agent key.
+Command deadlines default to 30 s and are capped at 120 s.
 
 ## Actions
 
@@ -133,8 +160,14 @@ The existing `browser` tool gains an optional `target` parameter:
 accepts only the actions above (`act` kinds map to click/type/press/scroll/wait),
 plus an optional `device` name/id when the principal has more than one online
 device. `evaluate`, `console`, cookies and raw CDP are never available on
-`connected`. Connected browsing is off unless the tenant enables
-`tools.browser.connected` (feature flag).
+`connected`. Connected browsing is off unless the tenant enables it with the
+builtin tool setting `browser` → `{"connected": true}` (feature flag).
+
+The Gateway also checks every result: content from a page outside the grant is
+withheld (`origin_not_granted`), the `tabs` list hides the title and URL of tabs
+on ungranted origins, and page content is wrapped as untrusted external content
+before the agent sees it. For `navigate` the Gateway checks the target URL; the
+extension also requires the current page to be granted.
 
 ## Approval
 
