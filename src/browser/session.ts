@@ -38,6 +38,8 @@ export const tabsKey = (profileId: string) => `browserTabs:${profileId}`;
 /** Ids of the grants the person created in this browser (not secret). Grants are honoured only from this list. */
 export const grantsKey = (profileId: string) => `browserGrants:${profileId}`;
 const OWN_GRANTS_MAX = 200;
+/** The Gateway's answer (lowercased) while the workspace has connected browsing turned off. */
+export const FEATURE_DISABLED = 'failed_precondition';
 
 const deviceRecord = z.object({ device_id: z.uuid(), name: z.string() });
 const ownGrantsRecord = z.array(z.string().min(1)).max(OWN_GRANTS_MAX);
@@ -248,6 +250,12 @@ export class BrowserSession {
       if (error instanceof RelayError && error.code.toLowerCase() === 'not_found') {
         await this.forgetDevice();
         return;
+      }
+      // The workspace has connected browsing turned off: say so. The reconnect backoff keeps
+      // retrying, so the device attaches by itself once an admin turns it on.
+      if (error instanceof RelayError && error.code.toLowerCase() === FEATURE_DISABLED && epoch === this.epoch) {
+        this.error = FEATURE_DISABLED;
+        this.broadcast();
       }
       throw error;
     }

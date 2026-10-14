@@ -289,6 +289,7 @@ const en = {
   'error.invalid_origin': 'One of the sites is not a valid address.',
   'error.origin_permission_missing': 'Chrome has no access to one of the sites.',
   'error.permission_denied': 'The Gateway refused this request.',
+  'error.failed_precondition': 'Connected browsing is turned off for this workspace. Ask a workspace admin to turn it on; this browser connects by itself once it is.',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -577,6 +578,7 @@ const vi: Record<MessageKey, string> = {
   'error.invalid_origin': 'Có một trang không phải địa chỉ hợp lệ.',
   'error.origin_permission_missing': 'Chrome chưa có quyền truy cập một trong các trang.',
   'error.permission_denied': 'Gateway từ chối yêu cầu này.',
+  'error.failed_precondition': 'Trình duyệt kết nối đang tắt cho workspace này. Hãy nhờ quản trị viên workspace bật lên; trình duyệt này sẽ tự kết nối khi được bật.',
 };
 
 export type Locale = 'en' | 'vi';

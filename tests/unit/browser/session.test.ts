@@ -135,6 +135,30 @@ describe('BrowserSession', () => {
     }
   });
 
+  it('says when the workspace has connected browsing off and attaches once it is turned on', async () => {
+    vi.useFakeTimers();
+    try {
+      await enrolledHere();
+      await saveSettings(settings(gw.id));
+      const t = setup();
+      await t.session.sync();
+      await t.connect();
+      t.socket().refuse(t.socket().last('browser.device.attach'), 'FAILED_PRECONDITION', 'connected browsing is not enabled');
+      await flush();
+      expect(t.session.state()).toMatchObject({ connection: 'reconnecting', error: 'failed_precondition', device: { device_id: DEVICE_ID } });
+
+      // The backoff retries by itself; the device is kept and attaches when the feature is on.
+      vi.advanceTimersByTime(750);
+      expect(t.sockets).toHaveLength(2);
+      await t.connect();
+      t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+      await flush();
+      expect(t.session.state()).toMatchObject({ connection: 'connected', error: undefined, device: { device_id: DEVICE_ID }, grants: [{ grant_id: GRANT_ID }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('closes the socket and forgets grants on a profile switch', async () => {
     await enrolledHere();
     await saveSettings(settings(gw.id));

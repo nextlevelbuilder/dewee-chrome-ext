@@ -253,6 +253,11 @@ export function BrowserControlDrawer({ state, agents, call, onClose }: { state: 
                 {t('browser.refused')}
               </p>
             ) : null}
+            {state.error === 'failed_precondition' ? (
+              <p className="notice notice-warn" role="alert">
+                {t('error.failed_precondition')}
+              </p>
+            ) : null}
             {state.control !== 'active' ? <p className="notice notice-warn">{state.control === 'paused' ? t('browser.control.paused') : t('browser.control.stopped')}</p> : null}
             <ApprovalCards approvals={state.approvals} call={call} />
             {state.connection === 'connected' ? (
