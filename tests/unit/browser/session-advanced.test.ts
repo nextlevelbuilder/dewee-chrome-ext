@@ -30,7 +30,7 @@ class FakeEngine implements AdvancedEngine {
   }
   async prepare(tabId: number) {
     this.calls.push(`prepare:${tabId}`);
-    const refused = await this.options.check(tabId);
+    const refused = await this.options.check(tabId, 'attach');
     if (refused) return refused;
     this.attached.add(tabId);
     this.options.onChange();
@@ -38,7 +38,7 @@ class FakeEngine implements AdvancedEngine {
   }
   async run(tabId: number, request: DriverRequest): Promise<DriverResponse> {
     this.calls.push(`run:${request.op}`);
-    const refused = await this.options.check(tabId);
+    const refused = await this.options.check(tabId, 'attach');
     if (refused) return { ok: false, code: refused };
     this.attached.add(tabId);
     if (request.op === 'screenshot') return { ok: true, op: 'screenshot', data: '/9j/AAAA' };
@@ -219,7 +219,7 @@ describe('BrowserSession: Advanced build', () => {
     const t = setup();
     await t.ready();
     await t.command('open', { url: `${ORIGIN}/` });
-    const check = (tabId: number) => t.engine()?.options.check(tabId);
+    const check = (tabId: number) => t.engine()?.options.check(tabId, 'attach');
     // Off by default.
     await expect(check(40)).resolves.toBe('debugger_unavailable');
     await t.enable();
@@ -248,7 +248,29 @@ describe('BrowserSession: Advanced build', () => {
     t.socket().event('browser.grant.revoked', { grant_id: GRANT_ID });
     await flush();
     expect(t.engine()?.calls).toEqual(expect.arrayContaining(['forget:40', 'release:40']));
-    await expect(t.engine()?.options.check(40)).resolves.toBe('tab_not_owned');
+    await expect(t.engine()?.options.check(40, 'send')).resolves.toBe('tab_not_owned');
+  });
+
+  it('reads Chrome’s site permission once per command, and the tab’s address before every debugger command', async () => {
+    const t = setup();
+    await t.ready();
+    await t.command('open', { url: `${ORIGIN}/` });
+    await t.enable();
+    const permission = vi.spyOn(t.api, 'hasHostPermission');
+    const check = (phase: 'attach' | 'send') => t.engine()?.options.check(40, phase);
+    await expect(check('attach')).resolves.toBeNull();
+    for (let i = 0; i < 3; i += 1) await expect(check('send')).resolves.toBeNull();
+    expect(permission).toHaveBeenCalledTimes(1);
+    // The page left the grant between two commands: refused at once, whatever was looked up before.
+    const tab = t.tabs.get(40);
+    if (!tab) throw new Error('no tab');
+    tab.url = 'https://elsewhere.example.test/';
+    await expect(check('send')).resolves.toBe('origin_not_granted');
+    tab.url = `${ORIGIN}/`;
+    // After a refusal the permission is looked up again, as it is at the next attach.
+    await expect(check('send')).resolves.toBeNull();
+    await expect(check('attach')).resolves.toBeNull();
+    expect(permission).toHaveBeenCalledTimes(3);
   });
 
   it('turns itself off when the person cancels Chrome’s debugging bar', async () => {

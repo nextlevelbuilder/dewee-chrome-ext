@@ -234,6 +234,73 @@ describe('focused', () => {
   });
 });
 
+describe('focus in shadow roots and frames', () => {
+  /** Makes `el` the main document's focused element (jsdom cannot focus into a stand-in frame). */
+  function focusOn(el: Element) {
+    Object.defineProperty(document, 'activeElement', { configurable: true, get: () => el });
+  }
+
+  afterEach(() => {
+    delete (document as unknown as Record<string, unknown>).activeElement;
+  });
+
+  /** An iframe whose document (stood in for, as jsdom has no cross-document origins) has `focused` focused. */
+  function frameFocused(origin: string, html: string) {
+    const inner = document.implementation.createHTMLDocument('');
+    inner.body.innerHTML = html;
+    const frame = document.createElement('iframe');
+    Object.defineProperty(frame, 'contentDocument', { get: () => ({ body: inner.body, documentElement: inner.documentElement, location: { origin }, activeElement: inner.body.firstElementChild }) });
+    document.body.append(frame);
+    focusOn(frame);
+    return frame;
+  }
+
+  function shadowPassword(): HTMLInputElement {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<input type="password" aria-label="Secret">';
+    const input = root.querySelector('input') as HTMLInputElement;
+    input.focus();
+    return input;
+  }
+
+  it('sees a password field focused inside an open shadow root, and sends it no key', () => {
+    const input = shadowPassword();
+    const keys: string[] = [];
+    input.addEventListener('keydown', (event) => keys.push(event.key));
+    expect(pageRun({ op: 'focused', origins: origins() })).toMatchObject({ ok: true, name: 'Secret', sensitive: true });
+    expect(pageRun({ op: 'press', origins: origins(), key: 'Backspace' })).toEqual({ ok: false, code: 'sensitive_field' });
+    expect(pageRun({ op: 'press', origins: origins(), key: 'Tab' })).toEqual({ ok: false, code: 'sensitive_field' });
+    expect(keys).toEqual([]);
+  });
+
+  it('sends keys to the element focused inside an open shadow root', () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<input aria-label="Search">';
+    const input = root.querySelector('input') as HTMLInputElement;
+    input.focus();
+    const keys: string[] = [];
+    input.addEventListener('keydown', (event) => keys.push(event.key));
+    expect(pageRun({ op: 'press', origins: origins(), key: 'Escape' })).toEqual({ ok: true, op: 'press' });
+    expect(keys).toEqual(['Escape']);
+  });
+
+  it('refuses keys while focus is on a frame', () => {
+    frameFocused(location.origin, '<input aria-label="Inner">');
+    expect(pageRun({ op: 'press', origins: origins(), key: 'Tab' })).toEqual({ ok: false, code: 'origin_not_granted' });
+  });
+
+  it('describes focus inside a granted same-origin frame and refuses a frame outside the grant', () => {
+    frameFocused(location.origin, '<input aria-label="Inner">');
+    expect(pageRun({ op: 'focused', origins: origins() })).toMatchObject({ ok: true, role: 'textbox', name: 'Inner', sensitive: false });
+    frameFocused('https://pay.example.test', '<input aria-label="Card number" autocomplete="cc-number">');
+    expect(pageRun({ op: 'focused', origins: origins() })).toEqual({ ok: false, code: 'origin_not_granted' });
+  });
+});
+
 describe('findText', () => {
   it('looks for text in the page', () => {
     expect(pageRun({ op: 'findText', origins: origins(), text: 'Plain paragraph' })).toEqual({ ok: true, op: 'findText', found: true });

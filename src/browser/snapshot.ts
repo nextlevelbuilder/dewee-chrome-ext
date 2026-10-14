@@ -38,10 +38,13 @@ export type PageResponse =
   | { ok: true; op: 'describe'; role: string; name: string; sensitive: boolean; editable: boolean }
   | { ok: true; op: 'click' | 'highlight' | 'type' | 'press' | 'scroll' | 'watch' }
   | { ok: true; op: 'findText'; found: boolean }
-  | { ok: false; code: PageErrorCode };
+  /** `effect: 'maybe'`: the step failed after events had already been dispatched to the page. */
+  | { ok: false; code: PageErrorCode; effect?: 'maybe' };
 
 export function pageRun(request: PageRequest): PageResponse {
   const STATE_KEY = '__deweeBrowserControl';
+  /** Set right before the first event reaches the page; a failure after it may have had an effect. */
+  let acted = false;
   /** DOM nodes added or removed after a snapshot beyond which its refs are treated as stale. */
   const MUTATION_LIMIT = 200;
   const TEXT_LINE_MAX = 300;
@@ -390,6 +393,35 @@ export function pageRun(request: PageRequest): PageResponse {
     return target.dispatchEvent(new view.KeyboardEvent(type, { key: name, code: name, bubbles: true, cancelable: true, composed: true }));
   }
 
+  const isFrameOwner = (el: Element) => tagOf(el) === 'IFRAME' || tagOf(el) === 'FRAME';
+
+  /** The element with keyboard focus in `doc`, followed through open shadow roots (the body when none). */
+  function deepActive(doc: Document): Element | null {
+    let el: Element | null = doc.activeElement && doc.activeElement !== doc.documentElement ? doc.activeElement : doc.body;
+    for (let depth = 0; el?.shadowRoot?.activeElement && depth < 64; depth += 1) el = el.shadowRoot.activeElement;
+    return el;
+  }
+
+  /**
+   * Where keys would go: through open shadow roots and into same-origin frames whose origin is in
+   * the grant. Focus inside a frame that cannot be read here (cross-origin) or is not granted is refused.
+   */
+  function focusTarget(): { ok: true; el: Element | null } | { ok: false; code: PageErrorCode } {
+    let el = deepActive(document);
+    for (let depth = 0; el && isFrameOwner(el) && depth < 16; depth += 1) {
+      let inner: Document | null;
+      try {
+        inner = (el as HTMLIFrameElement).contentDocument;
+      } catch {
+        inner = null;
+      }
+      if (!inner || !request.origins.includes(pageOrigin(inner))) return { ok: false, code: 'origin_not_granted' };
+      el = deepActive(inner);
+    }
+    if (el && isFrameOwner(el)) return { ok: false, code: 'origin_not_granted' };
+    return { ok: true, el };
+  }
+
   function focusables(doc: Document): HTMLElement[] {
     const selector = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex], [contenteditable]:not([contenteditable="false"])';
     return [...doc.querySelectorAll<HTMLElement>(selector)].filter((el) => el.tabIndex >= 0 && !isDisabled(el) && isVisible(el));
@@ -407,16 +439,19 @@ export function pageRun(request: PageRequest): PageResponse {
         return { ok: true, op: 'describe', role, name: clip(nameOf(found.el), TEXT_LINE_MAX), sensitive: isSensitive(found.el), editable: isEditable(found.el) };
       }
       case 'focused': {
-        const active = document.activeElement;
-        const el = active && active !== document.documentElement ? active : document.body;
+        const focus = focusTarget();
+        if (!focus.ok) return focus;
+        const el = focus.el;
         if (!el) return { ok: true, op: 'describe', role: '', name: '', sensitive: false, editable: false };
-        return { ok: true, op: 'describe', role: roleOf(el), name: el === document.body ? '' : clip(nameOf(el), TEXT_LINE_MAX), sensitive: isSensitive(el), editable: isEditable(el) };
+        const body = el === el.ownerDocument.body;
+        return { ok: true, op: 'describe', role: body ? '' : roleOf(el), name: body ? '' : clip(nameOf(el), TEXT_LINE_MAX), sensitive: isSensitive(el), editable: isEditable(el) };
       }
       case 'click': {
         const found = resolve(request.ref, request.generation);
         if (!found.ok) return found;
         const point = reachable(found.el);
         if (!point) return { ok: false, code: 'element_not_interactable' };
+        acted = true;
         pointer(found.el, point.x, point.y);
         (found.el as HTMLElement).focus?.({ preventScroll: true });
         (found.el as HTMLElement).click();
@@ -455,6 +490,7 @@ export function pageRun(request: PageRequest): PageResponse {
         if (isSensitive(el)) return { ok: false, code: 'sensitive_field' };
         if (!isEditable(el) || !reachable(el)) return { ok: false, code: 'element_not_interactable' };
         (el as HTMLElement).focus({ preventScroll: true });
+        acted = true;
         const tag = tagOf(el);
         if (tag === 'INPUT' || tag === 'TEXTAREA') {
           setValue(el, request.text);
@@ -486,7 +522,11 @@ export function pageRun(request: PageRequest): PageResponse {
       }
       case 'press': {
         const doc = document;
-        const target = (doc.activeElement && doc.activeElement !== doc.documentElement ? doc.activeElement : doc.body) ?? doc.documentElement;
+        const target = deepActive(doc) ?? doc.documentElement;
+        // Keys never go into a frame (this script cannot see what has focus there) or a secret field.
+        if (isFrameOwner(target)) return { ok: false, code: 'origin_not_granted' };
+        if (isSensitive(target)) return { ok: false, code: 'sensitive_field' };
+        acted = true;
         const proceed = key(target, request.key, 'keydown');
         // Synthetic key events have no default action, so the harmless ones are applied here. Enter and
         // Escape are only dispatched: activating a focused control could skip the high-risk confirmation.
@@ -538,6 +578,6 @@ export function pageRun(request: PageRequest): PageResponse {
       }
     }
   } catch {
-    return { ok: false, code: 'internal' };
+    return acted ? { ok: false, code: 'internal', effect: 'maybe' } : { ok: false, code: 'internal' };
   }
 }

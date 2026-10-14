@@ -40,10 +40,16 @@ export type DriverResponse =
   | Exclude<PageResponse, { ok: false }>
   /** A JPEG of the visible viewport, base64, at most `MAX_SCREENSHOT_BYTES` once decoded. */
   | { ok: true; op: 'screenshot'; data: string }
-  | { ok: false; code: DriverErrorCode };
+  /**
+   * `effect: 'maybe'`: the failure came after input may already have reached the page (a click
+   * pressed but not released, text inserted but not submitted). The executor then reports
+   * `outcome_unknown` instead of the code, so the agent does not simply repeat the action.
+   */
+  | { ok: false; code: DriverErrorCode; effect?: 'maybe' };
 
 export interface PageDriver {
-  run(tabId: number, request: DriverRequest): Promise<DriverResponse>;
+  /** `signal` ends the work between steps once the command is cancelled or reaches its deadline. */
+  run(tabId: number, request: DriverRequest, signal?: AbortSignal): Promise<DriverResponse>;
   /** The command that used the tab is over: let go of anything held for it (the debugger). */
   release?(tabId: number): Promise<void>;
 }

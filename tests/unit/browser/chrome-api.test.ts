@@ -44,4 +44,11 @@ describe('chromeBrowserApi.run', () => {
     executeScript.mockRejectedValueOnce(new Error('Cannot access contents of the page'));
     expect(await chromeBrowserApi.run(7, { op: 'watch', origins: ['https://shop.example.test'] })).toEqual({ ok: false, code: 'origin_not_granted' });
   });
+
+  it('marks a failed input step as possibly applied, since the script may have run', async () => {
+    executeScript.mockRejectedValueOnce(new Error('Frame was removed'));
+    expect(await chromeBrowserApi.run(7, { op: 'press', origins: ['https://shop.example.test'], key: 'Tab' })).toEqual({ ok: false, code: 'origin_not_granted', effect: 'maybe' });
+    executeScript.mockResolvedValueOnce([]);
+    expect(await chromeBrowserApi.run(7, { op: 'click', origins: ['https://shop.example.test'], generation: 1, ref: 'e1' })).toEqual({ ok: false, code: 'internal', effect: 'maybe' });
+  });
 });

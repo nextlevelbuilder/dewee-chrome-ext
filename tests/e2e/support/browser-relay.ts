@@ -376,6 +376,14 @@ export async function startPageServer(): Promise<{ port: number; stop(): Promise
 </body></html>`;
   const inner = `<!doctype html><html lang="en"><body><button type="button" onclick="this.textContent = 'Inner clicked'">Inner button</button></body></html>`;
   const foreign = `<!doctype html><html lang="en"><body><p>Foreign text e2e</p><button type="button">Foreign button</button></body></html>`;
+  // `/slow` has a button whose mousedown handler keeps the page busy longer than one debugger
+  // command may wait, so the input reaches the page but its outcome is never confirmed.
+  const slow = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>E2E Slow</title></head>
+<body>
+  <h1>Slow</h1>
+  <button type="button" onmousedown="const end = Date.now() + 12000; while (Date.now() < end) {} this.textContent = 'Slow done'">Slow button</button>
+</body></html>`;
   let port = 0;
   const server = createServer((req, res) => {
     const html = (body: string) => res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(body);
@@ -383,6 +391,7 @@ export async function startPageServer(): Promise<{ port: number; stop(): Promise
     if (req.url === '/frames') return void html(frames(port));
     if (req.url === '/inner') return void html(inner);
     if (req.url === '/foreign') return void html(foreign);
+    if (req.url === '/slow') return void html(slow);
     html(page);
   });
   // Loopback only; Chrome tries 127.0.0.1 for `localhost` when ::1 refuses, so the cross-site frame loads too.

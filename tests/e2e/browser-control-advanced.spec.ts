@@ -149,6 +149,35 @@ test('reads and acts inside a same-site frame, and leaves a cross-site frame out
   expect(await run('screenshot', { tab: 't1' })).toMatchObject({ ok: true });
 });
 
+test('sends no key while focus is inside a cross-site frame', async ({ serviceWorker, openPanel, context }) => {
+  await connectAdvanced(serviceWorker, openPanel);
+  await openSite('/frames', 'E2E Frames');
+  const page = context.pages().find((p) => p.url().startsWith(siteOrigin));
+  await page!.bringToFront();
+  await page!.frameLocator('iframe[title="Other site"]').getByRole('button', { name: 'Foreign button' }).focus();
+  // The window may not hold OS focus in this run, so focus is read from the documents, not `:focus`.
+  const foreignFrame = page!.frames().find((f) => f.url().includes('/foreign'));
+  const focusedInFrame = () => foreignFrame!.evaluate(() => document.activeElement?.textContent ?? '');
+  await expect.poll(() => page!.evaluate(() => document.activeElement?.getAttribute('title') ?? '')).toBe('Other site');
+  await expect.poll(focusedInFrame).toBe('Foreign button');
+  expect(await run('press', { tab: 't1', key: 'Tab' })).toMatchObject({ ok: false, error: { code: 'origin_not_granted' } });
+  // Focus did not move: no key reached the frame.
+  expect(await focusedInFrame()).toBe('Foreign button');
+  await expect.poll(() => siteAttached(serviceWorker)).toBe(false);
+});
+
+test('reports outcome_unknown when input reached the page but the step after it failed', async ({ serviceWorker, openPanel, context }) => {
+  test.setTimeout(90_000);
+  await connectAdvanced(serviceWorker, openPanel);
+  const { text, generation } = await openSite('/slow', 'E2E Slow');
+  // The button's mousedown handler keeps the page busy past the debugger's per-command wait.
+  expect(await run('click', { tab: 't1', ref: refOf(text, 'Slow button'), generation })).toMatchObject({ ok: false, error: { code: 'outcome_unknown' } });
+  const page = context.pages().find((p) => p.url().startsWith(siteOrigin));
+  // The press did reach the page.
+  await expect(page!.getByRole('button', { name: 'Slow done' })).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => siteAttached(serviceWorker), { timeout: 15_000 }).toBe(false);
+});
+
 test('answers debugger_unavailable when another debugger holds the tab, and falls back only when allowed', async ({ serviceWorker, openPanel }) => {
   const panel = await connectAdvanced(serviceWorker, openPanel);
   const drawer = panel.getByRole('dialog', { name: 'Browser control' });

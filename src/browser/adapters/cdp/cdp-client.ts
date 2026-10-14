@@ -76,10 +76,23 @@ export class CdpFailure extends Error {
   }
 }
 
+/**
+ * When the policy check runs: `attach` (the start of a command, everything looked up afresh) or
+ * `send` (before each command; Chrome's site permission for the origin may be reused from attach).
+ */
+export type CheckPhase = 'attach' | 'send';
+
+export interface SendOptions {
+  /** The command was cancelled or reached its deadline: nothing more is sent. */
+  signal?: AbortSignal;
+  /** Called once the policy check passed, right before the command goes to Chrome. */
+  onDispatch?(): void;
+}
+
 export interface CdpClientDeps {
   debugger: DebuggerApi;
   /** Local policy for this tab right now: null when allowed, otherwise the refusal. */
-  check(tabId: number): Promise<DriverErrorCode | null>;
+  check(tabId: number, phase: CheckPhase): Promise<DriverErrorCode | null>;
   /** Chrome ended a session we held (tab closed, the person pressed Cancel on Chrome's bar, ...). */
   onDetached?(tabId: number, reason: string): void;
   /** The set of attached tabs changed (for the side panel). */
@@ -87,16 +100,31 @@ export interface CdpClientDeps {
   timeoutMs?: number;
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/** The failure for a command that was cancelled or ran out of time (the runner reports the real reason). */
+const aborted = () => new CdpFailure('timeout', false, 'command aborted');
+
+function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new CdpFailure('timeout', false, 'CDP command timed out')), ms);
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      done();
+      reject(aborted());
+    };
+    const timer = setTimeout(() => {
+      done();
+      reject(new CdpFailure('timeout', false, 'CDP command timed out'));
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
     promise.then(
       (value) => {
-        clearTimeout(timer);
+        done();
         resolve(value);
       },
       (error: unknown) => {
-        clearTimeout(timer);
+        done();
         reject(error instanceof Error ? error : new Error(String(error)));
       },
     );
@@ -106,6 +134,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 export class CdpClient {
   private readonly attached = new Set<number>();
   private readonly pending = new Map<number, Promise<void>>();
+  /** Tabs asked to detach while their attach was still running. */
+  private readonly detachRequested = new Set<number>();
   private readonly timeoutMs: number;
 
   constructor(private readonly deps: CdpClientDeps) {
@@ -131,8 +161,9 @@ export class CdpClient {
     if (this.attached.has(tabId)) return;
     const running = this.pending.get(tabId);
     if (running) return running;
+    this.detachRequested.delete(tabId);
     const attaching = (async () => {
-      const refused = await this.deps.check(tabId);
+      const refused = await this.deps.check(tabId, 'attach');
       if (refused) throw new CdpFailure(refused, true);
       try {
         await withTimeout(this.deps.debugger.attach({ tabId }, CDP_VERSION), this.timeoutMs);
@@ -140,6 +171,11 @@ export class CdpClient {
         // DevTools or another extension holds the tab, the page is one Chrome never lets extensions
         // debug, or the tab went away.
         throw new CdpFailure('debugger_unavailable', true, error instanceof Error ? error.message : '');
+      }
+      // Pause, Stop, revoke or opt-out asked to let go while Chrome was attaching: do it now.
+      if (this.detachRequested.delete(tabId)) {
+        await this.deps.debugger.detach({ tabId }).catch(() => undefined);
+        throw new CdpFailure('debugger_unavailable', true, 'detached while attaching');
       }
       this.attached.add(tabId);
       this.deps.onChange?.();
@@ -153,17 +189,21 @@ export class CdpClient {
   }
 
   /** Sends one whitelisted command to an attached tab, after the policy check. */
-  async send<T = Record<string, unknown>>(tabId: number, method: CdpMethod, params: Record<string, unknown> = {}): Promise<T> {
+  async send<T = Record<string, unknown>>(tabId: number, method: CdpMethod, params: Record<string, unknown> = {}, options: SendOptions = {}): Promise<T> {
     // The type already restricts `method`; this runtime check holds even against a cast.
     if (!isAllowedCdpMethod(method)) throw new CdpFailure('internal', false, `method not allowed: ${String(method)}`);
+    if (options.signal?.aborted) throw aborted();
     if (!this.attached.has(tabId)) throw new CdpFailure('debugger_unavailable', false);
-    const refused = await this.deps.check(tabId);
+    const refused = await this.deps.check(tabId, 'send');
     if (refused) {
       await this.detach(tabId);
       throw new CdpFailure(refused, false);
     }
+    if (options.signal?.aborted) throw aborted();
+    if (!this.attached.has(tabId)) throw new CdpFailure('debugger_unavailable', false);
+    options.onDispatch?.();
     try {
-      return (await withTimeout(this.deps.debugger.sendCommand({ tabId }, method, params), this.timeoutMs)) as T;
+      return (await withTimeout(this.deps.debugger.sendCommand({ tabId }, method, params), this.timeoutMs, options.signal)) as T;
     } catch (error) {
       if (error instanceof CdpFailure) throw error;
       // Detached meanwhile (Stop, revoke, the person cancelled Chrome's bar, the tab closed).
@@ -174,6 +214,8 @@ export class CdpClient {
 
   /** Lets go of the tab. `force` also asks Chrome when this worker does not remember attaching (after a restart). */
   async detach(tabId: number, force = false): Promise<void> {
+    // An attach still running for the tab detaches as soon as Chrome completes it.
+    if (this.pending.has(tabId)) this.detachRequested.add(tabId);
     const held = this.attached.delete(tabId);
     if (!held && !force) return;
     await this.deps.debugger.detach({ tabId }).catch(() => undefined);
@@ -181,6 +223,7 @@ export class CdpClient {
   }
 
   async detachAll(): Promise<void> {
+    for (const tabId of this.pending.keys()) this.detachRequested.add(tabId);
     await Promise.all([...this.attached].map((tabId) => this.detach(tabId)));
   }
 }

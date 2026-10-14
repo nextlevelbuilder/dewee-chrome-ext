@@ -8,22 +8,29 @@
  * - refs: `eN` handles bound to a DOM backend node id, the frame it lives in, and the tab's
  *   snapshot generation. Navigation moves the generation; a node that no longer exists is
  *   `element_not_found`. Refs are never shared with the Standard adapter.
- * - click/type/press: trusted input (`Input.*`) after a hit test at the element's centre.
- * - screenshot: the visible viewport only, sensitive fields and ungranted frames blacked out.
+ * - click/type/press: trusted input (`Input.*`) after a hit test at the element's centre. Keys go
+ *   only where focus is known to be: the main frame or a granted same-process frame, never a
+ *   sensitive field (shadow roots included). A failure once input was sent is marked
+ *   `effect: 'maybe'`, which the executor reports as `outcome_unknown`.
+ * - screenshot: the visible viewport only, sensitive fields and every frame that cannot be
+ *   redacted field by field blacked out; the boxes are measured before and after the capture and
+ *   must agree, otherwise no image is returned.
  * - frames: in-process frames whose origin is in the grant are read and driven; out-of-process
  *   (cross-site) frames are left out and their elements cannot be targeted.
  */
 import type { PressKey } from '../../protocol';
 import { urlOrigin } from '../../policy';
 import type { DriverErrorCode, DriverRequest, DriverResponse, PageDriver } from '../page-driver';
-import { CdpFailure, type CdpClient } from './cdp-client';
+import { CdpFailure, type CdpClient, type CdpMethod } from './cdp-client';
 import { formatOutline, indexDom, isEditableNode, isSensitiveNode, nameOf, property, roleOf, type AXNode, type DomInfo, type DomNode } from './cdp-outline';
-import { bytesToBase64, fitScreenshot, quadsToRects, type DecodedImage, type ImageCodec, type Rect } from './screenshot';
+import { bytesToBase64, fitScreenshot, quadsToRects, type DecodedImage, type ImageCodec } from './screenshot';
 
 /** How long trusted input from the debugger is not taken for the person's own input. */
 export const DISPATCH_GRACE_MS = 600;
-/** Frames read per snapshot besides the main one. */
+/** Frames read per snapshot (or per focus lookup) besides the main one. */
 const MAX_FRAMES = 10;
+/** Most boxes a screenshot blacks out; a page with more is refused rather than sent half redacted. */
+export const MAX_REDACTIONS = 64;
 
 interface RefTarget {
   backend: number;
@@ -48,6 +55,26 @@ interface Frames {
   origins: Map<string, string | null>;
 }
 
+/** The command running on a tab: its cancellation, and whether input already went out. */
+interface RunState {
+  signal?: AbortSignal;
+  effect: boolean;
+}
+
+interface Viewport {
+  pageX: number;
+  pageY: number;
+  clientWidth: number;
+  clientHeight: number;
+}
+
+/** What a screenshot blacks out, measured at one moment. `key` compares two measurements. */
+interface Layout {
+  key: string;
+  quads: number[][];
+  width: number;
+}
+
 const KEYS: Record<PressKey, { key: string; code: string; keyCode: number; text?: string }> = {
   Enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
   Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
@@ -63,10 +90,20 @@ const KEYS: Record<PressKey, { key: string; code: string; keyCode: number; text?
   End: { key: 'End', code: 'End', keyCode: 35 },
 };
 
+const FRAME_TAGS = new Set(['IFRAME', 'FRAME', 'FENCEDFRAME', 'PORTAL']);
+
 const fail = (code: DriverErrorCode): DriverResponse => ({ ok: false, code });
 
 /** Chrome's message for a node id that no longer resolves. */
 const GONE = /No node|Could not find node|does not exist|not found/i;
+/** Chrome's message for a node that is not rendered (it has no box to black out). */
+const NO_BOX = /Could not compute (content )?quads|Could not compute box model/i;
+
+const isFocused = (node: AXNode) => property(node, 'focused') === true;
+const isDocumentNode = (node: AXNode) => {
+  const role = roleOf(node);
+  return role === 'RootWebArea' || role === 'WebArea';
+};
 
 export interface CdpAdapterDeps<I extends DecodedImage = DecodedImage> {
   client: CdpClient;
@@ -78,6 +115,8 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   private readonly refs = new Map<number, TabRefs>();
   private readonly dispatching = new Map<number, number>();
   private readonly overlay = new Set<number>();
+  /** One command per tab at a time (the executor leases the tab), so the run is kept per tab. */
+  private readonly runs = new Map<number, RunState>();
   private readonly now: () => number;
 
   constructor(private readonly deps: CdpAdapterDeps<I>) {
@@ -125,78 +164,111 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     return (this.dispatching.get(tabId) ?? 0) > this.now();
   }
 
-  async run(tabId: number, request: DriverRequest): Promise<DriverResponse> {
+  async run(tabId: number, request: DriverRequest, signal?: AbortSignal): Promise<DriverResponse> {
+    const state: RunState = { signal, effect: false };
+    this.runs.set(tabId, state);
     try {
       await this.deps.client.attach(tabId);
-      switch (request.op) {
-        case 'snapshot':
-          return await this.snapshot(tabId, request.origins, request.generation, request.maxChars);
-        case 'describe': {
-          const target = await this.target(tabId, request.origins, request.generation, request.ref);
-          const ax = await this.axNode(tabId, target);
-          const dom = await this.describeDom(tabId, target);
-          return { ok: true, op: 'describe', role: roleOf(ax), name: nameOf(ax), sensitive: isSensitiveNode(dom), editable: isEditableNode(dom) };
-        }
-        case 'highlight': {
-          const target = await this.target(tabId, request.origins, request.generation, request.ref);
-          await this.deps.client.send(tabId, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: target.backend });
-          if (!this.overlay.has(tabId)) {
-            await this.deps.client.send(tabId, 'DOM.enable');
-            await this.deps.client.send(tabId, 'Overlay.enable');
-            this.overlay.add(tabId);
-          }
-          await this.deps.client.send(tabId, 'Overlay.highlightNode', {
-            backendNodeId: target.backend,
-            highlightConfig: { showInfo: false, contentColor: { r: 124, g: 58, b: 237, a: 0.15 }, borderColor: { r: 124, g: 58, b: 237, a: 0.9 } },
-          });
-          return { ok: true, op: 'highlight' };
-        }
-        case 'click': {
-          const target = await this.target(tabId, request.origins, request.generation, request.ref);
-          await this.axNode(tabId, target);
-          const point = await this.reachable(tabId, target);
-          await this.hideHighlight(tabId);
-          await this.input(tabId, async () => {
-            const base = { x: point.x, y: point.y, button: 'left', clickCount: 1 };
-            await this.deps.client.send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-            await this.deps.client.send(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', buttons: 1 });
-            await this.deps.client.send(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased', buttons: 0 });
-          });
-          return { ok: true, op: 'click' };
-        }
-        case 'type': {
-          const target = await this.target(tabId, request.origins, request.generation, request.ref);
-          await this.axNode(tabId, target);
-          const dom = await this.describeDom(tabId, target);
-          if (isSensitiveNode(dom)) return fail('sensitive_field');
-          if (!isEditableNode(dom)) return fail('element_not_interactable');
-          await this.reachable(tabId, target);
-          await this.input(tabId, async () => {
-            await this.deps.client.send(tabId, 'DOM.focus', { backendNodeId: target.backend });
-            // Replace what is there, like the Standard adapter: select all, then insert (or delete).
-            await this.key(tabId, { key: 'a', code: 'KeyA', keyCode: 65 }, ['selectAll']);
-            if (request.text) await this.deps.client.send(tabId, 'Input.insertText', { text: request.text });
-            else await this.key(tabId, { key: 'Delete', code: 'Delete', keyCode: 46 });
-            if (request.submit) await this.key(tabId, KEYS.Enter);
-          });
-          return { ok: true, op: 'type' };
-        }
-        case 'press': {
-          const frames = await this.frames(tabId);
-          if (!request.origins.includes(frames.origins.get(frames.main) ?? '')) return fail('origin_not_granted');
-          await this.input(tabId, () => this.key(tabId, KEYS[request.key]));
-          return { ok: true, op: 'press' };
-        }
-        case 'screenshot':
-          return await this.screenshot(tabId, request.origins);
-        default:
-          // Scrolling, waiting for text, the focused element and the input watcher stay with the page script.
-          return fail('internal');
-      }
+      const response = await this.perform(tabId, request);
+      return !response.ok && state.effect ? { ...response, effect: 'maybe' } : response;
     } catch (error) {
-      if (error instanceof CdpFailure) return fail(error.code);
-      return fail('internal');
+      const code = error instanceof CdpFailure ? error.code : 'internal';
+      // Once input went out, a failure does not mean nothing happened.
+      return state.effect ? { ok: false, code, effect: 'maybe' } : fail(code);
+    } finally {
+      if (this.runs.get(tabId) === state) this.runs.delete(tabId);
     }
+  }
+
+  private async perform(tabId: number, request: DriverRequest): Promise<DriverResponse> {
+    switch (request.op) {
+      case 'snapshot':
+        return this.snapshot(tabId, request.origins, request.generation, request.maxChars);
+      case 'describe': {
+        const target = await this.target(tabId, request.origins, request.generation, request.ref);
+        const ax = await this.axNode(tabId, target);
+        const dom = await this.describeDom(tabId, target);
+        return { ok: true, op: 'describe', role: roleOf(ax), name: nameOf(ax), sensitive: isSensitiveNode(dom), editable: isEditableNode(dom) };
+      }
+      case 'highlight': {
+        const target = await this.target(tabId, request.origins, request.generation, request.ref);
+        await this.send(tabId, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: target.backend });
+        if (!this.overlay.has(tabId)) {
+          await this.send(tabId, 'DOM.enable');
+          await this.send(tabId, 'Overlay.enable');
+          this.overlay.add(tabId);
+        }
+        await this.send(tabId, 'Overlay.highlightNode', {
+          backendNodeId: target.backend,
+          highlightConfig: { showInfo: false, contentColor: { r: 124, g: 58, b: 237, a: 0.15 }, borderColor: { r: 124, g: 58, b: 237, a: 0.9 } },
+        });
+        return { ok: true, op: 'highlight' };
+      }
+      case 'click': {
+        const target = await this.target(tabId, request.origins, request.generation, request.ref);
+        await this.axNode(tabId, target);
+        const point = await this.reachable(tabId, target);
+        await this.hideHighlight(tabId);
+        await this.input(tabId, async () => {
+          const base = { x: point.x, y: point.y, button: 'left', clickCount: 1 };
+          await this.dispatch(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+          await this.dispatch(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', buttons: 1 });
+          await this.dispatch(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased', buttons: 0 });
+        });
+        return { ok: true, op: 'click' };
+      }
+      case 'type': {
+        const target = await this.target(tabId, request.origins, request.generation, request.ref);
+        await this.axNode(tabId, target);
+        const dom = await this.describeDom(tabId, target);
+        if (isSensitiveNode(dom)) return fail('sensitive_field');
+        if (!isEditableNode(dom)) return fail('element_not_interactable');
+        await this.reachable(tabId, target);
+        await this.input(tabId, async () => {
+          await this.send(tabId, 'DOM.focus', { backendNodeId: target.backend });
+          // A focus handler may have moved focus (to a password field, say): type only into the element itself.
+          await this.expectFocus(tabId, request.origins, target);
+          // Replace what is there, like the Standard adapter: select all, then insert (or delete).
+          await this.key(tabId, { key: 'a', code: 'KeyA', keyCode: 65 }, ['selectAll']);
+          if (request.text) await this.dispatch(tabId, 'Input.insertText', { text: request.text });
+          else await this.key(tabId, { key: 'Delete', code: 'Delete', keyCode: 46 });
+          if (request.submit) {
+            await this.expectFocus(tabId, request.origins, target);
+            await this.key(tabId, KEYS.Enter);
+          }
+        });
+        return { ok: true, op: 'type' };
+      }
+      case 'press': {
+        const frames = await this.frames(tabId);
+        await this.keyTarget(tabId, request.origins, frames);
+        await this.input(tabId, () => this.key(tabId, KEYS[request.key]));
+        return { ok: true, op: 'press' };
+      }
+      case 'screenshot':
+        return this.screenshot(tabId, request.origins);
+      default:
+        // Scrolling, waiting for text, the focused element and the input watcher stay with the page script.
+        return fail('internal');
+    }
+  }
+
+  // ---------- Sending ----------
+
+  /** A read or a non-input step, cancelled with the command. */
+  private send<T = Record<string, unknown>>(tabId: number, method: CdpMethod, params: Record<string, unknown> = {}): Promise<T> {
+    return this.deps.client.send<T>(tabId, method, params, { signal: this.runs.get(tabId)?.signal });
+  }
+
+  /** An input step: once it passed the policy check and goes to Chrome, the page may change. */
+  private dispatch(tabId: number, method: CdpMethod, params: Record<string, unknown>): Promise<unknown> {
+    const state = this.runs.get(tabId);
+    return this.deps.client.send(tabId, method, params, {
+      signal: state?.signal,
+      onDispatch: () => {
+        if (state) state.effect = true;
+      },
+    });
   }
 
   // ---------- Refs ----------
@@ -223,7 +295,7 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   }
 
   private async frames(tabId: number): Promise<Frames> {
-    const { frameTree } = await this.deps.client.send<{ frameTree: FrameTreeNode }>(tabId, 'Page.getFrameTree');
+    const { frameTree } = await this.send<{ frameTree: FrameTreeNode }>(tabId, 'Page.getFrameTree');
     const origins = new Map<string, string | null>();
     const visit = (node: FrameTreeNode) => {
       origins.set(node.frame.id, urlOrigin(node.frame.url));
@@ -234,7 +306,7 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   }
 
   private async document(tabId: number, mainFrame: string): Promise<Map<number, DomInfo>> {
-    const { root } = await this.deps.client.send<{ root: DomNode }>(tabId, 'DOM.getDocument', { depth: -1, pierce: true });
+    const { root } = await this.send<{ root: DomNode }>(tabId, 'DOM.getDocument', { depth: -1, pierce: true });
     return indexDom(root, mainFrame);
   }
 
@@ -242,7 +314,7 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   private async axNode(tabId: number, target: RefTarget): Promise<AXNode> {
     let nodes: AXNode[];
     try {
-      ({ nodes } = await this.deps.client.send<{ nodes: AXNode[] }>(tabId, 'Accessibility.getPartialAXTree', { backendNodeId: target.backend, fetchRelatives: false }));
+      ({ nodes } = await this.send<{ nodes: AXNode[] }>(tabId, 'Accessibility.getPartialAXTree', { backendNodeId: target.backend, fetchRelatives: false }));
     } catch (error) {
       throw this.nodeError(error);
     }
@@ -254,7 +326,7 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
 
   private async describeDom(tabId: number, target: RefTarget): Promise<DomInfo> {
     try {
-      const { node } = await this.deps.client.send<{ node: DomNode }>(tabId, 'DOM.describeNode', { backendNodeId: target.backend });
+      const { node } = await this.send<{ node: DomNode }>(tabId, 'DOM.describeNode', { backendNodeId: target.backend });
       return indexDom(node, target.frame).get(node.backendNodeId) ?? { tag: node.nodeName.toUpperCase(), attrs: new Map(), frame: target.frame };
     } catch (error) {
       throw this.nodeError(error);
@@ -274,8 +346,8 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   private async reachable(tabId: number, target: RefTarget): Promise<{ x: number; y: number }> {
     let quads: number[][];
     try {
-      await this.deps.client.send(tabId, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: target.backend });
-      ({ quads } = await this.deps.client.send<{ quads: number[][] }>(tabId, 'DOM.getContentQuads', { backendNodeId: target.backend }));
+      await this.send(tabId, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: target.backend });
+      ({ quads } = await this.send<{ quads: number[][] }>(tabId, 'DOM.getContentQuads', { backendNodeId: target.backend }));
     } catch (error) {
       throw this.nodeError(error);
     }
@@ -283,12 +355,13 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     if (!quad) throw new CdpFailure('element_not_interactable', false);
     const x = ((quad[0] as number) + (quad[2] as number) + (quad[4] as number) + (quad[6] as number)) / 4;
     const y = ((quad[1] as number) + (quad[3] as number) + (quad[5] as number) + (quad[7] as number)) / 4;
-    const { cssLayoutViewport } = await this.deps.client.send<{ cssLayoutViewport: { clientWidth: number; clientHeight: number } }>(tabId, 'Page.getLayoutMetrics');
+    const { cssLayoutViewport } = await this.send<{ cssLayoutViewport: { clientWidth: number; clientHeight: number } }>(tabId, 'Page.getLayoutMetrics');
     if (x < 0 || y < 0 || x > cssLayoutViewport.clientWidth || y > cssLayoutViewport.clientHeight) throw new CdpFailure('element_not_interactable', false);
     let hit: number | undefined;
     try {
-      ({ backendNodeId: hit } = await this.deps.client.send<{ backendNodeId: number }>(tabId, 'DOM.getNodeForLocation', { x: Math.round(x), y: Math.round(y), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false }));
-    } catch {
+      ({ backendNodeId: hit } = await this.send<{ backendNodeId: number }>(tabId, 'DOM.getNodeForLocation', { x: Math.round(x), y: Math.round(y), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false }));
+    } catch (error) {
+      if (error instanceof CdpFailure && error.code !== 'internal') throw error;
       hit = undefined;
     }
     if (hit === undefined) throw new CdpFailure('element_not_interactable', false);
@@ -318,6 +391,61 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     });
   }
 
+  // ---------- Focus ----------
+
+  /**
+   * Where keyboard input would go now, from the `focused` state of the accessibility trees (they
+   * see into shadow roots, open or closed): the focused node and its frame, a frame whose document
+   * itself has focus, or null when no readable tree holds focus (an out-of-process frame does).
+   */
+  private async focus(tabId: number, frames: Frames): Promise<{ frame: string; node?: AXNode } | null> {
+    const others = [...frames.origins.keys()].filter((id) => id !== frames.main);
+    let documentFocus: string | null = null;
+    for (const frame of [frames.main, ...others.slice(0, MAX_FRAMES)]) {
+      let nodes: AXNode[];
+      try {
+        ({ nodes } = await this.send<{ nodes: AXNode[] }>(tabId, 'Accessibility.getFullAXTree', frame === frames.main ? {} : { frameId: frame }));
+      } catch (error) {
+        // A frame this session cannot read is skipped; if focus is there, nothing below finds it.
+        if (frame === frames.main || !(error instanceof CdpFailure) || error.code !== 'internal') throw error;
+        continue;
+      }
+      const focused = nodes.filter(isFocused);
+      const node = focused.find((n) => !isDocumentNode(n));
+      if (node) return { frame, node };
+      if (documentFocus === null && focused.length > 0) documentFocus = frame;
+      // The main document itself has focus: no frame holds it.
+      if (documentFocus === frames.main) return { frame: frames.main };
+    }
+    if (others.length > MAX_FRAMES) return null;
+    return documentFocus === null ? null : { frame: documentFocus };
+  }
+
+  /**
+   * Checks that keys may go where focus is: a granted page, focus in the main frame or a granted
+   * same-process frame, not a sensitive field. Returns the focused node (undefined for a document
+   * with no focused element); throws the refusal otherwise.
+   */
+  private async keyTarget(tabId: number, origins: string[], frames: Frames): Promise<number | undefined> {
+    if (!origins.includes(frames.origins.get(frames.main) ?? '')) throw new CdpFailure('origin_not_granted', false);
+    const focus = await this.focus(tabId, frames);
+    if (!focus || !origins.includes(frames.origins.get(focus.frame) ?? '')) throw new CdpFailure('origin_not_granted', false);
+    if (!focus.node) return undefined;
+    const backend = focus.node.backendDOMNodeId;
+    const info = backend === undefined ? undefined : (await this.document(tabId, frames.main)).get(backend);
+    // A focused node the DOM read cannot place is treated like a secret field.
+    if (info === undefined || isSensitiveNode(info)) throw new CdpFailure('sensitive_field', false);
+    // Focus on a frame element means keys go into a document no tree here showed.
+    if (FRAME_TAGS.has(info.tag) || info.childFrame !== undefined) throw new CdpFailure('origin_not_granted', false);
+    return backend;
+  }
+
+  /** Focus is on the element being typed into (and it is still allowed to receive keys). */
+  private async expectFocus(tabId: number, origins: string[], target: RefTarget): Promise<void> {
+    const focused = await this.keyTarget(tabId, origins, await this.frames(tabId));
+    if (focused !== target.backend) throw new CdpFailure('element_not_interactable', false);
+  }
+
   // ---------- Input ----------
 
   private async input(tabId: number, send: () => Promise<void>): Promise<void> {
@@ -331,12 +459,12 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
 
   private async key(tabId: number, key: { key: string; code: string; keyCode: number; text?: string }, commands?: string[]): Promise<void> {
     const base = { key: key.key, code: key.code, windowsVirtualKeyCode: key.keyCode, nativeVirtualKeyCode: key.keyCode };
-    await this.deps.client.send(tabId, 'Input.dispatchKeyEvent', { ...base, type: key.text ? 'keyDown' : 'rawKeyDown', ...(key.text ? { text: key.text, unmodifiedText: key.text } : {}), ...(commands ? { commands } : {}) });
-    await this.deps.client.send(tabId, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
+    await this.dispatch(tabId, 'Input.dispatchKeyEvent', { ...base, type: key.text ? 'keyDown' : 'rawKeyDown', ...(key.text ? { text: key.text, unmodifiedText: key.text } : {}), ...(commands ? { commands } : {}) });
+    await this.dispatch(tabId, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
   }
 
   private async hideHighlight(tabId: number): Promise<void> {
-    if (this.overlay.has(tabId)) await this.deps.client.send(tabId, 'Overlay.hideHighlight').catch(() => undefined);
+    if (this.overlay.has(tabId)) await this.send(tabId, 'Overlay.hideHighlight').catch(() => undefined);
   }
 
   // ---------- Snapshot ----------
@@ -346,12 +474,12 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     if (!origins.includes(frames.origins.get(frames.main) ?? '')) return fail('origin_not_granted');
     const dom = await this.document(tabId, frames.main);
     const trees = new Map<string, AXNode[]>();
-    trees.set(frames.main, (await this.deps.client.send<{ nodes: AXNode[] }>(tabId, 'Accessibility.getFullAXTree')).nodes);
+    trees.set(frames.main, (await this.send<{ nodes: AXNode[] }>(tabId, 'Accessibility.getFullAXTree')).nodes);
     const granted = new Set([...frames.origins].filter(([, origin]) => origin !== null && origins.includes(origin)).map(([id]) => id));
     for (const frame of granted) {
       if (frame === frames.main || trees.size > MAX_FRAMES) continue;
       try {
-        trees.set(frame, (await this.deps.client.send<{ nodes: AXNode[] }>(tabId, 'Accessibility.getFullAXTree', { frameId: frame })).nodes);
+        trees.set(frame, (await this.send<{ nodes: AXNode[] }>(tabId, 'Accessibility.getFullAXTree', { frameId: frame })).nodes);
       } catch (error) {
         // An out-of-process frame cannot be read through this tab's session: it is left out.
         if (error instanceof CdpFailure && error.code !== 'internal') throw error;
@@ -381,21 +509,31 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
 
   // ---------- Screenshot ----------
 
+  /**
+   * Measures what to black out, captures, measures again. The two measurements must match (same
+   * scroll position, viewport, fields and boxes, every box found); otherwise it tries once more and
+   * then refuses, so an image is never returned with boxes taken from a different layout.
+   */
   private async screenshot(tabId: number, origins: string[]): Promise<DriverResponse> {
-    const frames = await this.frames(tabId);
-    if (!origins.includes(frames.origins.get(frames.main) ?? '')) return fail('origin_not_granted');
-    const dom = await this.document(tabId, frames.main);
-    const { cssVisualViewport } = await this.deps.client.send<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(tabId, 'Page.getLayoutMetrics');
-    const { data } = await this.deps.client.send<{ data: string }>(tabId, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false });
-    // A navigation while capturing could have put another site in the picture.
-    const after = await this.frames(tabId);
-    if (after.main !== frames.main || !origins.includes(after.origins.get(after.main) ?? '')) return fail('origin_not_granted');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const frames = await this.frames(tabId);
+      if (!origins.includes(frames.origins.get(frames.main) ?? '')) return fail('origin_not_granted');
+      const before = await this.layout(tabId, frames, origins);
+      const { data } = await this.send<{ data: string }>(tabId, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false });
+      // A navigation while capturing could have put another site in the picture.
+      const after = await this.frames(tabId);
+      if (after.main !== frames.main || !origins.includes(after.origins.get(after.main) ?? '')) return fail('origin_not_granted');
+      const again = await this.layout(tabId, after, origins);
+      if (before && again && before.key === again.key) return this.encode(data, again);
+    }
+    return fail('internal');
+  }
 
+  private async encode(data: string, layout: Layout): Promise<DriverResponse> {
     const image = await this.deps.codec.decode(data);
     try {
-      const ratio = cssVisualViewport.clientWidth > 0 ? image.width / cssVisualViewport.clientWidth : 1;
-      const redact = await this.redactions(tabId, dom, after, origins, ratio, image);
-      const bytes = await fitScreenshot(this.deps.codec, image, redact);
+      const ratio = layout.width > 0 ? image.width / layout.width : 1;
+      const bytes = await fitScreenshot(this.deps.codec, image, quadsToRects(layout.quads, ratio, image));
       if (!bytes) return fail('internal');
       return { ok: true, op: 'screenshot', data: bytesToBase64(bytes) };
     } finally {
@@ -403,25 +541,44 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     }
   }
 
-  /** Boxes to black out: every sensitive field, and every frame whose origin is not in the grant. */
-  private async redactions(tabId: number, dom: Map<number, DomInfo>, frames: Frames, origins: string[], ratio: number, size: { width: number; height: number }): Promise<Rect[]> {
-    const nodes: number[] = [];
-    for (const [backend, info] of dom) {
-      const field = info.tag === 'INPUT' || info.tag === 'TEXTAREA' || info.tag === 'SELECT' || info.attrs.has('contenteditable');
-      if (field && isSensitiveNode(info)) nodes.push(backend);
-      else if (info.childFrame !== undefined && !origins.includes(frames.origins.get(info.childFrame) ?? '')) nodes.push(backend);
-      else if ((info.tag === 'IFRAME' || info.tag === 'FRAME') && info.childFrame === undefined) nodes.push(backend);
-    }
-    const rects: Rect[] = [];
-    for (const backendNodeId of nodes) {
+  /** The boxes to black out right now, or null when one of them could not be measured. */
+  private async layout(tabId: number, frames: Frames, origins: string[]): Promise<Layout | null> {
+    const targets = this.redactionTargets(await this.document(tabId, frames.main), frames, origins);
+    if (targets.length > MAX_REDACTIONS) throw new CdpFailure('internal', false, 'too many areas to black out');
+    const { cssVisualViewport: view } = await this.send<{ cssVisualViewport: Viewport }>(tabId, 'Page.getLayoutMetrics');
+    const quads: number[][] = [];
+    for (const backendNodeId of targets) {
       try {
-        const { quads } = await this.deps.client.send<{ quads: number[][] }>(tabId, 'DOM.getContentQuads', { backendNodeId });
-        rects.push(...quadsToRects(quads, ratio, size));
+        quads.push(...(await this.send<{ quads: number[][] }>(tabId, 'DOM.getContentQuads', { backendNodeId })).quads);
       } catch (error) {
-        // Not rendered (no box): nothing to hide. Any refusal from the guard still stops the screenshot.
-        if (error instanceof CdpFailure && error.code !== 'internal') throw error;
+        // A refusal, a timeout or a cancellation ends the screenshot.
+        if (!(error instanceof CdpFailure) || error.code !== 'internal') throw error;
+        // Not rendered: nothing to hide. Any other failure (the node went away, ...) means this measurement cannot be trusted.
+        if (!NO_BOX.test(error.detail)) return null;
       }
     }
-    return rects;
+    return { key: JSON.stringify([view.pageX, view.pageY, view.clientWidth, view.clientHeight, targets, quads]), quads, width: view.clientWidth };
+  }
+
+  /**
+   * Every sensitive field, and every frame that cannot be redacted field by field: a frame is left
+   * visible only when it shows the main frame's origin, that origin is granted, and Chrome returned
+   * its document here (so its fields are in this list too). Cross-origin and out-of-process frames,
+   * granted or not, are blacked out whole.
+   */
+  private redactionTargets(dom: Map<number, DomInfo>, frames: Frames, origins: string[]): number[] {
+    const mainOrigin = frames.origins.get(frames.main) ?? null;
+    const targets: number[] = [];
+    for (const [backend, info] of dom) {
+      const field = info.tag === 'INPUT' || info.tag === 'TEXTAREA' || info.tag === 'SELECT' || info.attrs.has('contenteditable');
+      if (field && isSensitiveNode(info)) {
+        targets.push(backend);
+      } else if (FRAME_TAGS.has(info.tag) || info.childFrame !== undefined) {
+        const origin = info.childFrame === undefined ? null : (frames.origins.get(info.childFrame) ?? null);
+        const readable = info.contentIndexed === true && origin !== null && origin === mainOrigin && origins.includes(origin);
+        if (!readable) targets.push(backend);
+      }
+    }
+    return targets;
   }
 }

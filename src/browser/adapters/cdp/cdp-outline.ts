@@ -5,7 +5,8 @@
  *
  * The rules match the page script: values of sensitive fields (password, PIN, payment card,
  * one-time code; see sensitive.ts) are written as `value=[redacted]` whatever role the page gives
- * them; ignored nodes (hidden, `aria-hidden`) are skipped; a frame is walked only when its origin
+ * them, and so is the value of any node whose DOM attributes could not be read; ignored nodes
+ * (hidden, `aria-hidden`) are skipped; a frame is walked only when its origin
  * is in the grant and Chrome could read its tree here (in-process frames). Out-of-process frames
  * are left out, like cross-origin frames in Standard.
  */
@@ -50,6 +51,8 @@ export interface DomInfo {
   frame: string;
   /** For `<iframe>`/`<frame>` owners: the frame they hold. */
   childFrame?: string;
+  /** For frame owners: Chrome returned the frame's document here (an in-process frame), so its fields are indexed. */
+  contentIndexed?: boolean;
 }
 
 const TEXT_LINE_MAX = 300;
@@ -87,7 +90,15 @@ export function indexDom(root: DomNode, mainFrame: string): Map<number, DomInfo>
     const attrs = new Map<string, string>();
     const list = node.attributes ?? [];
     for (let i = 0; i + 1 < list.length; i += 2) attrs.set((list[i] as string).toLowerCase(), list[i + 1] as string);
-    index.set(node.backendNodeId, { tag: node.nodeName.toUpperCase(), attrs, parent, frame, childFrame: node.frameId && node.nodeType === 1 ? node.frameId : undefined });
+    const owner = node.nodeType === 1 && (node.frameId !== undefined || node.contentDocument !== undefined);
+    index.set(node.backendNodeId, {
+      tag: node.nodeName.toUpperCase(),
+      attrs,
+      parent,
+      frame,
+      childFrame: node.frameId && node.nodeType === 1 ? node.frameId : undefined,
+      ...(owner ? { contentIndexed: node.contentDocument !== undefined } : {}),
+    });
     for (const child of node.children ?? []) visit(child, node.backendNodeId, frame);
     for (const shadow of node.shadowRoots ?? []) visit(shadow, node.backendNodeId, frame);
     if (node.contentDocument) visit(node.contentDocument, node.backendNodeId, node.frameId ?? frame);
@@ -185,7 +196,8 @@ export function formatOutline(input: OutlineInput): { text: string; title: strin
       return;
     }
     if (INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId !== undefined) {
-      const sensitive = isSensitiveNode(info);
+      // A node the DOM read does not know (added between the two reads) cannot be checked: its value is not shown.
+      const sensitive = info === undefined || isSensitiveNode(info);
       const type = info?.tag === 'INPUT' && (info.attrs.get('type') ?? '').toLowerCase() === 'password' ? ' type=password' : '';
       let value = '';
       // Before anything else: a sensitive field is redacted whatever role the page gives it.

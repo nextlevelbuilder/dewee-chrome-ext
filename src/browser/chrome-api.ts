@@ -24,9 +24,12 @@ export interface BrowserApi extends PageDriver {
   removeTab(tabId: number): Promise<void>;
   /** null when the tab no longer exists. */
   getTab(tabId: number): Promise<TabInfo | null>;
-  run(tabId: number, request: DriverRequest): Promise<DriverResponse>;
+  run(tabId: number, request: DriverRequest, signal?: AbortSignal): Promise<DriverResponse>;
   hasHostPermission(origin: string): Promise<boolean>;
 }
+
+/** Page operations that send input to the page. */
+const INPUT_OPS: ReadonlySet<DriverRequest['op']> = new Set(['click', 'type', 'press']);
 
 /** Runs one request through the bundled page script (the Standard adapter). */
 export async function runPageScript(tabId: number, request: DriverRequest): Promise<DriverResponse> {
@@ -34,12 +37,15 @@ export async function runPageScript(tabId: number, request: DriverRequest): Prom
   if (request.op === 'screenshot') return { ok: false, code: 'unsupported_capability' };
   // The page function runs in a content-script world: `storage.local` must be closed to it first.
   if (!(await lockLocalStorage())) return { ok: false, code: 'internal' };
+  // For input, a lost answer does not mean nothing happened: the script may have run before the
+  // tab navigated or closed.
+  const unknown = INPUT_OPS.has(request.op) ? ({ effect: 'maybe' } as const) : {};
   try {
     const [frame] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, func: pageRun, args: [request] });
-    return (frame?.result as PageResponse | undefined) ?? { ok: false, code: 'internal' };
+    return (frame?.result as PageResponse | undefined) ?? { ok: false, code: 'internal', ...unknown };
   } catch {
     // Chrome refuses injection into pages without host access (or restricted pages), or the tab went away.
-    return { ok: false, code: 'origin_not_granted' };
+    return { ok: false, code: 'origin_not_granted', ...unknown };
   }
 }
 

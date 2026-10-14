@@ -198,12 +198,12 @@ export class Executor {
       }
       case 'snapshot': {
         const maxChars = command.params.max_chars ?? SNAPSHOT_DEFAULT_CHARS;
-        let response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars });
+        let response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars }, signal);
         if (!response.ok && response.code === 'stale_ref') {
           // The page changed a lot since the last snapshot: start a new generation and read it again.
           tabs.bump(tab.tabId);
           this.deps.onTabsChanged();
-          response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars });
+          response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars }, signal);
         }
         if (!response.ok || response.op !== 'snapshot') pageError(response);
         ensure(await guard.checkUrl(response.url, grant));
@@ -214,7 +214,7 @@ export class Executor {
         const { ref, generation } = command.params;
         if (generation !== tab.generation) throw new CommandError('stale_ref', 'The page changed since that snapshot');
         await this.watch(tab.tabId, grant);
-        const described = await this.page(tab.tabId, { op: 'describe', origins, generation, ref });
+        const described = await this.page(tab.tabId, { op: 'describe', origins, generation, ref }, signal);
         if (described.op !== 'describe') pageError(described);
         if (command.action === 'type') {
           if (described.sensitive) throw new CommandError('sensitive_field', 'Typing into password or payment fields is not allowed');
@@ -224,7 +224,7 @@ export class Executor {
         if (submit || isHighRiskName(described.name)) {
           await this.approve(command, tab, signal, { action: command.action, target: described.name, submit, preview: submit && command.action === 'type' ? approvalPreview(command.params.text) : undefined });
           // The page may have changed while the person decided: act only on the element they approved.
-          const again = await this.page(tab.tabId, { op: 'describe', origins, generation, ref });
+          const again = await this.page(tab.tabId, { op: 'describe', origins, generation, ref }, signal);
           if (again.op !== 'describe' || !sameTarget(described, again)) throw new CommandError('stale_ref', 'The element changed while waiting for approval');
         }
         if (command.action === 'click') await this.highlight(tab.tabId, { op: 'highlight', origins, generation, ref }, signal);
@@ -234,32 +234,31 @@ export class Executor {
         context.sideEffect = true;
         const request: DriverRequest =
           command.action === 'click' ? { op: 'click', origins, generation, ref } : { op: 'type', origins, generation, ref, text: command.params.text, submit };
-        await this.page(tab.tabId, request);
+        await this.page(tab.tabId, request, signal);
         await this.settle(tab.tabId, signal, command);
         return this.landed(tab, grant);
       }
       case 'press': {
         await this.watch(tab.tabId, grant);
+        // Keys go to whatever has focus: never a password or payment field, never a frame the grant
+        // does not cover (the adapters check again right before sending).
+        const focused = await this.page(tab.tabId, { op: 'focused', origins }, signal);
+        if (focused.op !== 'describe') pageError(focused);
+        if (focused.sensitive) throw new CommandError('sensitive_field', 'Keys are not sent to password or payment fields');
         if (command.params.key === 'Enter') {
           // Enter submits forms and sends messages in chat boxes: the same confirmation as `type` with submit.
-          const focused = await this.page(tab.tabId, { op: 'focused', origins });
-          if (focused.op !== 'describe') pageError(focused);
           await this.approve(command, tab, signal, { action: 'press', target: focused.name, submit: true });
-          const again = await this.page(tab.tabId, { op: 'focused', origins });
+          const again = await this.page(tab.tabId, { op: 'focused', origins }, signal);
           if (again.op !== 'describe' || !sameTarget(focused, again)) throw new CommandError('stale_ref', 'The focused element changed while waiting for approval');
           ensure(await guard.checkTab(tab.handle, grant, true));
-        } else if (command.params.key === 'Backspace') {
-          // Real key input (Advanced) would edit the field: never in a password or payment field.
-          const focused = await this.page(tab.tabId, { op: 'focused', origins });
-          if (focused.op === 'describe' && focused.sensitive) throw new CommandError('sensitive_field', 'Editing password or payment fields is not allowed');
         }
         this.recheck(command, signal);
         context.sideEffect = true;
-        await this.page(tab.tabId, { op: 'press', origins, key: command.params.key });
+        await this.page(tab.tabId, { op: 'press', origins, key: command.params.key }, signal);
         return { tab: tab.handle };
       }
       case 'scroll': {
-        await this.page(tab.tabId, { op: 'scroll', origins, direction: command.params.direction, amount: command.params.amount ?? 'page' });
+        await this.page(tab.tabId, { op: 'scroll', origins, direction: command.params.direction, amount: command.params.amount ?? 'page' }, signal);
         return { tab: tab.handle };
       }
       case 'wait': {
@@ -269,7 +268,7 @@ export class Executor {
         }
         const until = this.now() + this.remaining(command, WAIT_TEXT_MS);
         for (;;) {
-          const found = await this.page(tab.tabId, { op: 'findText', origins, text: command.params.text });
+          const found = await this.page(tab.tabId, { op: 'findText', origins, text: command.params.text }, signal);
           if (found.op === 'findText' && found.found) return { tab: tab.handle };
           if (this.now() >= until) throw new CommandError('timeout', 'The text did not appear in time');
           await this.sleep(250, signal);
@@ -288,7 +287,7 @@ export class Executor {
       }
       case 'screenshot': {
         this.recheck(command, signal);
-        const shot = await this.page(tab.tabId, { op: 'screenshot', origins });
+        const shot = await this.page(tab.tabId, { op: 'screenshot', origins }, signal);
         if (shot.op !== 'screenshot') pageError(shot);
         // The adapter keeps it within the Gateway's limit; check again rather than send an oversized frame.
         if (Math.floor((shot.data.length * 3) / 4) > MAX_SCREENSHOT_BYTES + 2) throw new CommandError('internal', 'The screenshot is too large');
@@ -300,7 +299,7 @@ export class Executor {
 
   /** Outlines the element for a moment before a click (best effort: a failure does not stop the click). */
   private async highlight(tabId: number, request: Extract<DriverRequest, { op: 'highlight' }>, signal: AbortSignal): Promise<void> {
-    const shown = await this.deps.api.run(tabId, request).catch(() => null);
+    const shown = await this.deps.api.run(tabId, request, signal).catch(() => null);
     if (shown?.ok) await this.sleep(HIGHLIGHT_MS, signal);
   }
 
@@ -327,9 +326,12 @@ export class Executor {
     return { tabs: list };
   }
 
-  private async page(tabId: number, request: DriverRequest): Promise<Extract<DriverResponse, { ok: true }>> {
-    const response = await this.deps.api.run(tabId, request);
+  private async page(tabId: number, request: DriverRequest, signal: AbortSignal): Promise<Extract<DriverResponse, { ok: true }>> {
+    const response = await this.deps.api.run(tabId, request, signal);
     if (!response.ok) {
+      // Input may already have reached the page (a click pressed, text inserted): the agent must
+      // look before trying again, whatever stopped the rest of the step.
+      if (response.effect === 'maybe') throw new CommandError('outcome_unknown');
       if (response.code === 'stale_ref') {
         // A large DOM change: move the generation so the next snapshot hands out fresh refs.
         this.deps.tabs.bump(tabId);

@@ -5,7 +5,7 @@
  */
 import type { DriverErrorCode } from '../page-driver';
 import { CdpAdapter } from './cdp-adapter';
-import { CdpClient, type DebuggerApi } from './cdp-client';
+import { CdpClient, type CheckPhase, type DebuggerApi } from './cdp-client';
 import { offscreenCodec } from './screenshot';
 
 export const chromeDebuggerApi: DebuggerApi = {
@@ -18,7 +18,7 @@ export const chromeDebuggerApi: DebuggerApi = {
 };
 
 export interface CdpAdapterOptions {
-  check(tabId: number): Promise<DriverErrorCode | null>;
+  check(tabId: number, phase: CheckPhase): Promise<DriverErrorCode | null>;
   onDetached(tabId: number, reason: string): void;
   onChange(): void;
 }

@@ -125,6 +125,74 @@ describe('CdpClient', () => {
     await expect(instance.send(1, 'Page.getFrameTree')).rejects.toMatchObject({ code: 'timeout' });
   });
 
+  it('detaches as soon as an attach completes when Pause or Stop asked for it while attaching', async () => {
+    const t = client();
+    let finish: () => void = () => undefined;
+    t.fake.api.attach.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+    const attaching = t.instance.attach(1);
+    await vi.waitFor(() => expect(t.fake.api.attach).toHaveBeenCalled());
+    await t.instance.detach(1);
+    expect(t.fake.api.detach).not.toHaveBeenCalled();
+    finish();
+    await expect(attaching).rejects.toMatchObject({ code: 'debugger_unavailable', beforeEffect: true });
+    expect(t.fake.api.detach).toHaveBeenCalledWith({ tabId: 1 });
+    expect(t.instance.isAttached(1)).toBe(false);
+    // A later attach is not affected.
+    await t.instance.attach(1);
+    expect(t.instance.isAttached(1)).toBe(true);
+  });
+
+  it('detaches a pending attach on detachAll too', async () => {
+    const t = client();
+    let finish: () => void = () => undefined;
+    t.fake.api.attach.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+    const attaching = t.instance.attach(2);
+    await vi.waitFor(() => expect(t.fake.api.attach).toHaveBeenCalled());
+    await t.instance.detachAll();
+    finish();
+    await expect(attaching).rejects.toMatchObject({ code: 'debugger_unavailable' });
+    expect(t.instance.attachedTabs).toEqual([]);
+  });
+
+  it('tells the policy check whether it runs for an attach or a command', async () => {
+    const t = client();
+    await t.instance.attach(1);
+    await t.instance.send(1, 'Page.getFrameTree');
+    expect(t.check.mock.calls).toEqual([
+      [1, 'attach'],
+      [1, 'send'],
+    ]);
+  });
+
+  it('reports a dispatch only once the policy check passed', async () => {
+    const t = client();
+    await t.instance.attach(1);
+    const onDispatch = vi.fn();
+    t.refuse('grant_revoked');
+    await expect(t.instance.send(1, 'Input.dispatchKeyEvent', {}, { onDispatch })).rejects.toMatchObject({ code: 'grant_revoked' });
+    expect(onDispatch).not.toHaveBeenCalled();
+    t.refuse(null);
+    await t.instance.attach(1);
+    await t.instance.send(1, 'Input.dispatchKeyEvent', {}, { onDispatch });
+    expect(onDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends nothing once the command is cancelled, and stops waiting for Chrome when it is', async () => {
+    const t = client();
+    await t.instance.attach(1);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(t.instance.send(1, 'Page.getFrameTree', {}, { signal: controller.signal })).rejects.toBeInstanceOf(CdpFailure);
+    expect(t.fake.api.sendCommand).not.toHaveBeenCalled();
+
+    const later = new AbortController();
+    t.fake.api.sendCommand.mockImplementationOnce(() => new Promise(() => undefined));
+    const pending = t.instance.send(1, 'Page.getFrameTree', {}, { signal: later.signal });
+    await vi.waitFor(() => expect(t.fake.api.sendCommand).toHaveBeenCalled());
+    later.abort();
+    await expect(pending).rejects.toBeInstanceOf(CdpFailure);
+  });
+
   it('detaches every tab, and a forced detach asks Chrome even for a tab it does not remember', async () => {
     const t = client();
     await t.instance.attach(1);

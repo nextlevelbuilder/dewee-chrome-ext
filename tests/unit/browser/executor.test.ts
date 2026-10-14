@@ -316,6 +316,27 @@ describe('Executor: click and type', () => {
     await expect(t.run(command('type', { tab: 't1', ref: 'e2', generation: 1, text: 'shoes' })).promise).resolves.toMatchObject({ tab: 't1' });
   });
 
+  it('reports outcome_unknown when the adapter failed after input may have reached the page', async () => {
+    for (const action of ['click', 'type', 'press'] as const) {
+      const t = setup({
+        page: (request) => {
+          if (request.op === action) return { ok: false, code: 'debugger_unavailable', effect: 'maybe' };
+          if (request.op === 'describe' || request.op === 'focused') return { ok: true, op: 'describe', role: 'textbox', name: 'Search', sensitive: false, editable: true };
+          return { ok: true, op: request.op } as PageResponse;
+        },
+      });
+      t.ownTab();
+      const params = action === 'press' ? { tab: 't1', key: 'Tab' as const } : action === 'type' ? { tab: 't1', ref: 'e1', generation: 1, text: 'shoes' } : { tab: 't1', ref: 'e1', generation: 1 };
+      await expect(t.run(command(action, params)).promise).rejects.toMatchObject({ code: 'outcome_unknown' });
+    }
+  });
+
+  it('keeps the specific code when the adapter refused before any input', async () => {
+    const t = setup({ page: (request) => (request.op === 'click' ? { ok: false, code: 'origin_not_granted' } : request.op === 'describe' ? { ok: true, op: 'describe', role: 'button', name: 'Next', sensitive: false, editable: false } : ({ ok: true, op: request.op } as PageResponse)) });
+    t.ownTab();
+    await expect(t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 })).promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+  });
+
   it('marks a side effect only once the page action starts', async () => {
     const t = setup();
     t.ownTab();
@@ -354,13 +375,23 @@ describe('Executor: approvals', () => {
     const t = setup();
     t.ownTab();
     await expect(t.run(command('press', { tab: 't1', key: 'Tab' })).promise).resolves.toEqual({ tab: 't1' });
-    expect(opsOf(t.pageCalls)).toEqual(['watch', 'press']);
+    expect(opsOf(t.pageCalls)).toEqual(['watch', 'focused', 'press']);
   });
 
-  it('refuses Backspace in a password field', async () => {
+  it('sends no key at all to a password field', async () => {
     const t = setup({ page: describing(() => ({ role: 'textbox', name: 'Password', sensitive: true, editable: true })) });
     t.ownTab();
     await expect(t.run(command('press', { tab: 't1', key: 'Backspace' })).promise).rejects.toMatchObject({ code: 'sensitive_field' });
+    await expect(t.run(command('press', { tab: 't1', key: 'Tab' })).promise).rejects.toMatchObject({ code: 'sensitive_field' });
+    expect(opsOf(t.pageCalls)).not.toContain('press');
+  });
+
+  it('sends no key when focus is in a frame the grant does not cover', async () => {
+    const t = setup({ page: (request) => (request.op === 'focused' ? { ok: false, code: 'origin_not_granted' } : ({ ok: true, op: request.op } as PageResponse)) });
+    t.ownTab();
+    const run = t.run(command('press', { tab: 't1', key: 'ArrowDown' }));
+    await expect(run.promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+    expect(run.context.sideEffect).toBe(false);
     expect(opsOf(t.pageCalls)).not.toContain('press');
   });
 

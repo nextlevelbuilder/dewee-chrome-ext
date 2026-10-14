@@ -34,7 +34,8 @@ import { CommandRunner } from './command-runner';
 import { deviceNameFor, platformOs } from './device-name';
 import { EngineRouter, type AdvancedEngine, type DebuggerPrefs } from './engine-router';
 import { Executor, type Activity } from './executor';
-import { grantExpired, isRestrictedUrl, LocalGuard, type ControlState } from './policy';
+import type { CheckPhase } from './adapters/cdp/cdp-client';
+import { grantExpired, isRestrictedUrl, LocalGuard, urlOrigin, type ControlState } from './policy';
 import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, isValidDeviceName, RELAY_EVENTS, type EventFrame, type Grant } from './protocol';
 import { BROWSER_PORT, type PanelState } from './panel-state';
 import { prefersVietnamese, TabMarker, type ActionApi } from './tab-marker';
@@ -139,6 +140,8 @@ export class BrowserSession {
   private pauseReason: PanelState['pauseReason'];
   /** Advanced build: off by default, for this browser session only. */
   private debuggerPrefs: DebuggerPrefs = { enabled: false, fallback: true };
+  /** Per tab: the origin whose Chrome site permission the last debugger attach confirmed. */
+  private readonly cdpPermitted = new Map<number, string>();
   private locale: LocalePref = 'auto';
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly ports = new Set<PanelPort>();
@@ -156,7 +159,7 @@ export class BrowserSession {
     // The constant keeps the debugger adapter out of Standard bundles.
     const factory = deps.cdp === undefined ? (ADVANCED_BUILD ? createCdpAdapter : null) : deps.cdp;
     const cdp = factory?.({
-      check: (tabId) => this.cdpCheck(tabId),
+      check: (tabId, phase) => this.cdpCheck(tabId, phase),
       onDetached: (tabId, reason) => this.onDebuggerDetached(tabId, reason),
       onChange: () => this.broadcast(),
     });
@@ -333,6 +336,7 @@ export class BrowserSession {
     this.timeline = [];
     this.pauseReason = undefined;
     this.debuggerPrefs = { enabled: false, fallback: true };
+    this.cdpPermitted.clear();
     this.clearExpiryTimer();
     this.markTabs();
     this.connection = 'offline';
@@ -555,6 +559,7 @@ export class BrowserSession {
   // ---------- Browser events ----------
 
   onTabRemoved(tabId: number): void {
+    this.cdpPermitted.delete(tabId);
     const tab = this.tabs.markClosed(tabId);
     if (!tab) return;
     this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle, 'tab_closed');
@@ -589,9 +594,17 @@ export class BrowserSession {
   /**
    * Policy for every debugger command, from the live state (not the command's copy): the person's
    * opt-in, Pause/Stop, the tab is an agent's own tab under a live grant, and the page in it right
-   * now is an allowed, granted origin with Chrome site access.
+   * now is an allowed, granted origin with Chrome site access. The tab's URL is read before every
+   * command; Chrome's site permission is read at attach (once per command) and reused for later
+   * commands while the page stays on the same origin.
    */
-  private async cdpCheck(tabId: number): Promise<DriverErrorCode | null> {
+  private async cdpCheck(tabId: number, phase: CheckPhase): Promise<DriverErrorCode | null> {
+    const refused = await this.cdpRefusal(tabId, phase);
+    if (refused) this.cdpPermitted.delete(tabId);
+    return refused;
+  }
+
+  private async cdpRefusal(tabId: number, phase: CheckPhase): Promise<DriverErrorCode | null> {
     if (!this.debuggerPrefs.enabled) return 'debugger_unavailable';
     if (this.control !== 'active') return 'device_paused';
     const tab = this.tabs.byTabId(tabId);
@@ -601,8 +614,13 @@ export class BrowserSession {
     if (grantExpired(grant, this.now())) return 'grant_expired';
     const info = await this.api.getTab(tabId);
     if (!info) return 'tab_closed';
+    if (info.url && isRestrictedUrl(info.url)) return 'restricted_page';
+    const origin = urlOrigin(info.url);
+    if (!origin || !grant.origins.includes(origin)) return 'origin_not_granted';
+    if (phase === 'send' && this.cdpPermitted.get(tabId) === origin) return null;
     const page = await this.guard.checkUrl(info.url, grant);
     if (!page.ok) return page.code === 'restricted_page' ? 'restricted_page' : 'origin_not_granted';
+    this.cdpPermitted.set(tabId, origin);
     return null;
   }
 

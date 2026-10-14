@@ -6,9 +6,11 @@
  *   never resolved by the other adapter: when the engine changes, the executor gets `stale_ref`,
  *   moves the generation and snapshots again.
  * - When Chrome refuses to attach (DevTools or another debugger holds the tab), snapshot and press
- *   use Standard if the person allowed fallback; a click or type on a debugger ref answers
- *   `stale_ref`, so the next snapshot hands out Standard refs. Without fallback the command ends
- *   with `debugger_unavailable`. Screenshots never fall back.
+ *   use Standard if the person allowed fallback. A `describe` of a debugger ref then answers
+ *   `stale_ref`; the executor describes before every click and type, so the agent snapshots again
+ *   and gets Standard refs. A later step of the same command that cannot attach (highlight, click,
+ *   type) ends with `debugger_unavailable`, as does any command without fallback. Screenshots
+ *   never fall back.
  * - Scrolling, waiting for text, the focused element and the input watcher always use Standard.
  */
 import type { BrowserApi } from './chrome-api';
@@ -80,43 +82,43 @@ export class EngineRouter implements BrowserApi {
     return issued && issued.generation === generation ? issued.engine : 'standard';
   }
 
-  async run(tabId: number, request: DriverRequest): Promise<DriverResponse> {
+  async run(tabId: number, request: DriverRequest, signal?: AbortSignal): Promise<DriverResponse> {
     const cdp = this.cdp;
     const prefs = this.prefs();
     switch (request.op) {
       case 'screenshot':
         if (!cdp || !prefs.enabled) return fail('unsupported_capability');
-        return cdp.run(tabId, request);
+        return cdp.run(tabId, request, signal);
       case 'snapshot': {
         const engine = await this.choose(tabId, prefs);
         if (typeof engine !== 'string') return engine;
         // Refs of this generation came from the other adapter: start a new generation instead.
         const issued = this.issued.get(tabId);
         if (issued && issued.generation === request.generation && issued.engine !== engine) return fail('stale_ref');
-        const response = engine === 'cdp' && cdp ? await cdp.run(tabId, request) : await this.standard.run(tabId, request);
+        const response = engine === 'cdp' && cdp ? await cdp.run(tabId, request, signal) : await this.standard.run(tabId, request, signal);
         if (response.ok) this.issued.set(tabId, { generation: request.generation, engine });
         return response;
       }
       case 'press': {
         const engine = await this.choose(tabId, prefs);
         if (typeof engine !== 'string') return engine;
-        return engine === 'cdp' && cdp ? cdp.run(tabId, request) : this.standard.run(tabId, request);
+        return engine === 'cdp' && cdp ? cdp.run(tabId, request, signal) : this.standard.run(tabId, request, signal);
       }
       case 'describe':
       case 'highlight':
       case 'click':
       case 'type': {
-        if (this.engineFor(tabId, request.generation) === 'standard') return this.standard.run(tabId, request);
+        if (this.engineFor(tabId, request.generation) === 'standard') return this.standard.run(tabId, request, signal);
         // Refs from a debugger snapshot, but the person turned the debugger off since: snapshot again.
         if (!cdp || !prefs.enabled) return fail('stale_ref');
-        const response = await cdp.run(tabId, request);
+        const response = await cdp.run(tabId, request, signal);
         // The debugger could not attach for this command (nothing reached the page yet): with fallback
         // allowed, the agent snapshots again and gets Standard refs.
         if (!response.ok && response.code === 'debugger_unavailable' && prefs.fallback && request.op === 'describe') return fail('stale_ref');
         return response;
       }
       default:
-        return this.standard.run(tabId, request);
+        return this.standard.run(tabId, request, signal);
     }
   }
 
