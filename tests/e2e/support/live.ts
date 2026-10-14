@@ -137,14 +137,45 @@ const ENSURE_LEDGER: ToolCall = { name: 'session_tasks', arguments: { action: 'e
 
 /** Scripts the stub model: a user line containing `match` opens a task ledger, then makes `call`. */
 export async function scriptToolCall(match: string, call: ToolCall): Promise<void> {
-  const steps = [[ENSURE_LEDGER], [call]];
+  await scriptToolCalls(match, [call]);
+}
+
+/** Like `scriptToolCall`, with one tool call per model round, in order. */
+export async function scriptToolCalls(match: string, calls: ToolCall[]): Promise<void> {
+  const steps = [[ENSURE_LEDGER], ...calls.map((call) => [call])];
   const res = await fetch(`${STUB_LLM}/__stub/script`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ match, steps }) });
   if (!res.ok) throw new Error(`stub script -> ${res.status}`);
 }
 
+interface StubMessage {
+  role?: string;
+  content?: unknown;
+}
+
+async function receivedLists(): Promise<StubMessage[][]> {
+  const res = await fetch(`${STUB_LLM}/__stub/requests`);
+  const { requests } = (await res.json()) as { requests: StubMessage[][] };
+  return requests;
+}
+
 /** Every message list the stub model received, serialized; used to prove a value never reached it. */
 export async function modelInputs(): Promise<string[]> {
-  const res = await fetch(`${STUB_LLM}/__stub/requests`);
-  const { requests } = (await res.json()) as { requests: unknown[] };
-  return requests.map((r) => JSON.stringify(r));
+  return (await receivedLists()).map((r) => JSON.stringify(r));
+}
+
+const textOf = (content: unknown): string =>
+  typeof content === 'string' ? content : Array.isArray(content) ? content.map((part: { text?: unknown }) => (typeof part?.text === 'string' ? part.text : '')).join('') : '';
+
+/**
+ * The tool results the model received in the turn whose user message contains `match`, in order
+ * (from the latest model call of that turn, which carries all of them).
+ */
+export async function turnToolResults(match: string): Promise<string[]> {
+  const lists = await receivedLists();
+  for (const list of [...lists].reverse()) {
+    const lastUser = list.findLastIndex((m) => m?.role === 'user');
+    if (lastUser < 0 || !textOf(list[lastUser]?.content).includes(match)) continue;
+    return list.slice(lastUser + 1).filter((m) => m?.role === 'tool').map((m) => textOf(m.content));
+  }
+  return [];
 }

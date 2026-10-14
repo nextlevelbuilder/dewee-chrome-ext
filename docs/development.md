@@ -22,6 +22,7 @@ pnpm dev               # opens Chrome with the extension and hot reload
 | `E2E_GATEWAY_URL`, `E2E_GATEWAY_API_KEY`, `E2E_WORKSPACE_ID` | Used only by the live Playwright scenarios. Never baked into the build. |
 | `E2E_OWNER_ID`, `E2E_GATEWAY_ADMIN_TOKEN` | Live tests only, on a local test gateway: mint and revoke a throwaway key, set and delete a credential-request policy. |
 | `E2E_GATEWAY_LOG`, `E2E_DB_TOOL`, `E2E_DB_DSN` | Optional live credential checks: the secret is absent from the Gateway log and stored encrypted. |
+| `E2E_DEWEE_CLI` (or `DEWEE_BIN`) | Optional path of the `dewee` CLI for the live connected browser checks: device and grant lists, cleanup of earlier test devices, and traces. |
 | `E2E_CLOUD_ORIGIN`, `E2E_CLOUD_EMAIL`, `E2E_CLOUD_PASSWORD` | Live Cloud scenario only, against a local Dewee app. Test values; never a real account. |
 | `E2E_ALLOW_REMOTE` | The live specs skip when `E2E_GATEWAY_URL` or `E2E_CLOUD_ORIGIN` is not loopback (`localhost`, `127.0.0.1`, `[::1]`). Set to `1` only to target a remote throwaway test stack on purpose. |
 
@@ -56,7 +57,7 @@ Both servers close in `afterEach`. The relay's API key is a fixed test value, no
 
 ### Live end-to-end
 
-The `tests/e2e/live-*.spec.ts` specs drive the built extension against a real local Dewee Gateway: connect, agents, chat, stop, key revocation, reopening the panel, reconciling a lost response (`live-selfhosted`), stream resilience (`live-resilience`), credential cards and admin policy (`live-credentials`), and Cloud sign-in through a local Dewee app (`live-cloud`). Each is skipped unless its environment is set (shell or `.env`). The model is the deterministic stub `tests/e2e/support/stub-llm.mjs`; `tests/e2e/support/setup-live-gateway.mjs` creates the tenant, agents and personal key and writes them to `.env`. Steps: [tests/e2e/support/live-gateway.md](../tests/e2e/support/live-gateway.md).
+The `tests/e2e/live-*.spec.ts` specs drive the built extension against a real local Dewee Gateway: connect, agents, chat, stop, key revocation, reopening the panel, reconciling a lost response (`live-selfhosted`), stream resilience (`live-resilience`), credential cards and admin policy (`live-credentials`), the connected browser driven by the agent's `browser` tool with the workspace feature flag, grants, approval, revoke and Stop (`live-connected-browser`), and Cloud sign-in through a local Dewee app (`live-cloud`). Each is skipped unless its environment is set (shell or `.env`). The model is the deterministic stub `tests/e2e/support/stub-llm.mjs`; `tests/e2e/support/setup-live-gateway.mjs` creates the tenant, agents and personal key and writes them to `.env`. Steps: [tests/e2e/support/live-gateway.md](../tests/e2e/support/live-gateway.md).
 
 ```bash
 pnpm build:e2e
