@@ -2,6 +2,7 @@ import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { writeCredential } from '@/auth/credential-store';
 import type { BrowserApi } from '@/browser/chrome-api';
 import { BrowserSession, deviceKey, grantsKey } from '@/browser/session';
+import type { BrowserRequest } from '@/protocol/messages';
 import { defaultSettings, saveSettings, type Profile, type Settings } from '@/shared/settings';
 import { AGENT_ID, DEVICE_ID, grant, GRANT_ID, NOW, ORIGIN } from './fixtures';
 import { FakeSocket, flush } from './fake-socket';
@@ -271,6 +272,50 @@ describe('BrowserSession', () => {
     await expect(created).resolves.toEqual({ ok: false, code: 'invalid_response' });
     expect(t.session.state().grants).toEqual([]);
     expect((await fakeBrowser.storage.local.get(grantsKey(gw.id)))[grantsKey(gw.id)]).toEqual([]);
+  });
+
+  it('explains a refused grant: a device revoked elsewhere is forgotten, a shared agent is not allowed', async () => {
+    await enrolledHere([]);
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    const request = (): BrowserRequest => ({ type: 'browser.grant.create', agentIds: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read'], ttlSeconds: 3600 });
+
+    const shared = t.session.handleRequest(request());
+    await flush();
+    t.socket().refuse(t.socket().last('browser.grant.create'), 'UNAUTHORIZED');
+    await expect(shared).resolves.toEqual({ ok: false, code: 'agent_not_allowed' });
+    expect(t.session.state().device).toMatchObject({ device_id: DEVICE_ID });
+
+    const revoked = t.session.handleRequest(request());
+    await flush();
+    t.socket().refuse(t.socket().last('browser.grant.create'), 'NOT_FOUND');
+    await expect(revoked).resolves.toEqual({ ok: false, code: 'device_revoked' });
+    expect(t.session.state().device).toBeNull();
+    expect(await fakeBrowser.storage.local.get(deviceKey(gw.id))).toEqual({});
+  });
+
+  it('re-sends the control state after every attach, also when active', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    expect(t.socket().last('browser.control.state').params).toEqual({ device_id: DEVICE_ID, state: 'active' });
+  });
+
+  it('refuses a device name with control characters before sending it', async () => {
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    await expect(t.session.handleRequest({ type: 'browser.enroll', name: 'Work‮laptop' })).resolves.toEqual({ ok: false, code: 'invalid_device_name' });
+    expect(t.socket().methods()).not.toContain('browser.device.enroll');
   });
 
   it('forgets the device and its grant ids when the device is revoked', async () => {

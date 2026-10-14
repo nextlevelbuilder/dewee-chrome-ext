@@ -1,4 +1,4 @@
-import { actionResultSchemas, deviceSchema, ERROR_CODES, grantSchema, methodParamsSchemas, parseCommand } from '@/browser/protocol';
+import { actionResultSchemas, deviceSchema, ERROR_CODES, grantSchema, isExactOrigin, isValidDeviceName, methodParamsSchemas, parseCommand } from '@/browser/protocol';
 import { AGENT_ID, DEVICE_ID, GRANT_ID, payload } from './fixtures';
 
 describe('parseCommand', () => {
@@ -82,6 +82,40 @@ describe('action results', () => {
   it('are strict, so nothing beyond the contract is reported', () => {
     expect(actionResultSchemas.click.safeParse({ tab: 't1', url: 'https://example.com/', title: 'Home' }).success).toBe(true);
     expect(actionResultSchemas.click.safeParse({ tab: 't1', url: 'https://example.com/', title: 'Home', html: '<p>' }).success).toBe(false);
-    expect(actionResultSchemas.snapshot.safeParse({ tab: 't1', url: '', title: '', generation: 1, text: 'x'.repeat(60_001) }).success).toBe(false);
+    expect(actionResultSchemas.snapshot.safeParse({ tab: 't1', url: 'https://example.com/', title: '', generation: 1, text: 'x'.repeat(60_001) }).success).toBe(false);
+  });
+
+  it('carry the page url wherever the Gateway checks it', () => {
+    expect(actionResultSchemas.snapshot.safeParse({ tab: 't1', url: 'https://example.com/', title: '', generation: 1, text: 'x' }).success).toBe(true);
+    for (const action of ['open', 'navigate', 'click', 'type'] as const) {
+      expect(actionResultSchemas[action].safeParse({ tab: 't1', title: 'Home' }).success).toBe(false);
+      expect(actionResultSchemas[action].safeParse({ tab: 't1', url: '', title: 'Home' }).success).toBe(false);
+    }
+    expect(actionResultSchemas.snapshot.safeParse({ tab: 't1', url: '', title: '', generation: 1, text: 'x' }).success).toBe(false);
+    expect(actionResultSchemas.screenshot.safeParse({ tab: 't1', url: 'https://example.com/', mime: 'image/jpeg', data_base64: 'AA==' }).success).toBe(true);
+    expect(actionResultSchemas.screenshot.safeParse({ tab: 't1', mime: 'image/jpeg', data_base64: 'AA==' }).success).toBe(false);
+  });
+});
+
+describe('contract limits', () => {
+  it('knows grant_revoked', () => {
+    expect(ERROR_CODES).toContain('grant_revoked');
+  });
+
+  it('refuses a trailing dot, an over-long host and a non-punycode host in grant origins', () => {
+    expect(isExactOrigin('https://example.com.')).toBe(false);
+    expect(isExactOrigin(`https://${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(63)}.com`)).toBe(false);
+    expect(isExactOrigin('https://bücher.example')).toBe(false);
+    expect(isExactOrigin('https://xn--bcher-kva.example')).toBe(true);
+  });
+
+  it('refuses device names with control or format characters or over 100 bytes', () => {
+    const schema = methodParamsSchemas['browser.device.rename'];
+    expect(schema.safeParse({ device_id: DEVICE_ID, name: 'Work laptop' }).success).toBe(true);
+    expect(isValidDeviceName('Work\nlaptop')).toBe(false);
+    expect(isValidDeviceName('Work‮laptop')).toBe(false);
+    expect(isValidDeviceName('Work​laptop')).toBe(false);
+    expect(isValidDeviceName('ứ'.repeat(34))).toBe(false);
+    expect(schema.safeParse({ device_id: DEVICE_ID, name: 'Work‮laptop' }).success).toBe(false);
   });
 });

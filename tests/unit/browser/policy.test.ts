@@ -64,7 +64,7 @@ describe('LocalGuard.checkGrant', () => {
 
   it('refuses a missing or revoked grant', () => {
     expect(guard.checkGrant(click(), undefined, 'active')).toMatchObject({ ok: false, code: 'no_grant' });
-    expect(guard.checkGrant(click(), grant({ revoked_at: new Date(NOW).toISOString() }), 'active')).toMatchObject({ ok: false, code: 'no_grant' });
+    expect(guard.checkGrant(click(), grant({ revoked_at: new Date(NOW).toISOString() }), 'active')).toMatchObject({ ok: false, code: 'grant_revoked' });
   });
 
   it('refuses an expired grant', () => {

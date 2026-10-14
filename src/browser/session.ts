@@ -26,7 +26,7 @@ import { CommandRunner } from './command-runner';
 import { deviceNameFor, platformOs } from './device-name';
 import { Executor, type Activity } from './executor';
 import { isRestrictedUrl, LocalGuard, type ControlState } from './policy';
-import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, RELAY_EVENTS, type EventFrame, type Grant } from './protocol';
+import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, isValidDeviceName, RELAY_EVENTS, type EventFrame, type Grant } from './protocol';
 import { BROWSER_PORT, type PanelState } from './panel-state';
 import { TabRegistry } from './tabs';
 import { RelayError, RelayTransport, relayUrl, type SocketFactory, type TransportState } from './transport';
@@ -244,7 +244,9 @@ export class BrowserSession {
       const attached = await transport.request('browser.device.attach', { device_id: device.device_id, capabilities: ['standard'] });
       if (epoch !== this.epoch) return;
       this.setGrants(attached.grants);
-      if (this.control !== 'active') void transport.request('browser.control.state', { device_id: device.device_id, state: this.control }).catch(() => undefined);
+      // Always re-send Pause/Stop/active: the Gateway may still hold a state the person changed
+      // while offline, or none at all after its own restart.
+      void transport.request('browser.control.state', { device_id: device.device_id, state: this.control }).catch(() => undefined);
     } catch (error) {
       // The device was revoked or belongs to someone else: forget it; the person can register again.
       if (error instanceof RelayError && error.code.toLowerCase() === 'not_found') {
@@ -312,7 +314,7 @@ export class BrowserSession {
   private dropGrant(grantId: string): void {
     this.grants.delete(grantId);
     this.forgetGrantId(grantId);
-    this.runner.cancelWhere((command) => command.grant_id === grantId);
+    this.runner.cancelWhere((command) => command.grant_id === grantId, 'grant_revoked');
     this.tabs.releaseGrant(grantId);
     this.persistTabs();
     this.broadcast();
@@ -434,6 +436,7 @@ export class BrowserSession {
         case 'browser.enroll': {
           const os = await platformOs();
           const name = request.name.trim() || deviceNameFor(os);
+          if (!isValidDeviceName(name)) return { ok: false, code: 'invalid_device_name' };
           const { device_id } = await transport.request('browser.device.enroll', { name, platform: os, capabilities: ['standard'] });
           const profileId = this.profileId;
           if (!profileId || this.transport !== transport) return { ok: false, code: 'device_offline' };
@@ -446,6 +449,7 @@ export class BrowserSession {
         case 'browser.device.list':
           return { ok: true, devices: (await transport.request('browser.device.list', {})).devices };
         case 'browser.device.rename': {
+          if (!isValidDeviceName(request.name.trim())) return { ok: false, code: 'invalid_device_name' };
           const { device } = await transport.request('browser.device.rename', { device_id: request.deviceId, name: request.name });
           if (this.device && this.profileId && device.device_id === this.device.device_id) {
             this.device = { device_id: this.device.device_id, name: device.name || request.name.trim() };
@@ -482,7 +486,20 @@ export class BrowserSession {
       if (!origins.includes(checked.origin)) origins.push(checked.origin);
     }
     const capabilities: ['browser.read'] | ['browser.read', 'browser.control'] = request.capabilities.includes('browser.control') ? ['browser.read', 'browser.control'] : ['browser.read'];
-    const { grant } = await transport.request('browser.grant.create', { device_id: device.device_id, agent_ids: request.agentIds, origins, capabilities, ttl_seconds: request.ttlSeconds });
+    let grant: Grant;
+    try {
+      ({ grant } = await transport.request('browser.grant.create', { device_id: device.device_id, agent_ids: request.agentIds, origins, capabilities, ttl_seconds: request.ttlSeconds }));
+    } catch (error) {
+      const code = errorCode(error);
+      // The device was revoked elsewhere: forget it, so the person can register again.
+      if (code === 'not_found') {
+        if (this.transport === transport) await this.forgetDevice();
+        return { ok: false, code: 'device_revoked' };
+      }
+      // Only the person's own agents and the workspace's default agent can be allowed.
+      if (code === 'unauthorized') return { ok: false, code: 'agent_not_allowed' };
+      throw error;
+    }
     if (this.transport !== transport) return { ok: false, code: 'device_offline' };
     await this.rememberGrant(grant.grant_id);
     // The Gateway's copy must match what was asked for; otherwise it is not used.

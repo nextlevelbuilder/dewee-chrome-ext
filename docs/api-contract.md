@@ -199,6 +199,9 @@ What the extension adds on its side of the contract:
 - `type` with `submit`, `press` with `Enter`, and clicks on high-risk elements wait for the person's "Allow once" in the side panel and fail with `approval_denied` otherwise; if the element changed while the person decided, they fail with `stale_ref`.
 - `type` is refused (`sensitive_field`) for password, PIN, payment-card and one-time-code fields, detected by input type, `autocomplete` (`cc-*`, `one-time-code`, `current-password`, `new-password`) and name/id hints; the snapshot redacts their values. `screenshot` answers `unsupported_capability` (no advanced build yet).
 - Grants and devices are read by `grant_id` / `device_id`, also accepting `id`, since v1 does not pin the object shape beyond those fields.
+- A command whose grant is revoked while it runs, or that arrives for a revoked grant, fails with `grant_revoked`. Page results (`open`, `navigate`, `snapshot`, `click`, `type`, `screenshot`) always carry the page `url`; a result without one is reported as `internal`.
+- After every `attach` the extension re-sends its Pause/Stop state (`browser.control.state`, also `active`), so a Resume made while offline or a Gateway restart cannot leave the device in the wrong state.
+- The panel explains Gateway refusals: `FAILED_PRECONDITION` (connected browsing off for the workspace; the reconnect backoff keeps retrying), `NOT_FOUND` on `grant.create` (the device was removed elsewhere; it is forgotten so the person can register again), `UNAUTHORIZED` on `grant.create` (only the person's own agents and the default agent can be allowed). Device names with control or format characters or over 100 UTF-8 bytes, and origins with a trailing dot, a host over 253 characters or a non-punycode host, are refused before anything is sent.
 - Dewee Cloud: not available yet; the panel says so and no socket is opened.
 
 ## Backend status

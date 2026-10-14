@@ -193,7 +193,7 @@ test('revoking the grant stops the running command and every later one', async (
   const waiting = relay.command('wait', { tab: 't1', text: 'This text never appears' });
   await expect.poll(() => relay.acks.includes(waiting.commandId)).toBe(true);
   relay.revokeGrant(grantId);
-  expect(await waiting.outcome).toMatchObject({ ok: false, error: { code: 'cancelled' } });
+  expect(await waiting.outcome).toMatchObject({ ok: false, error: { code: 'grant_revoked' } });
   expect(await run('tabs', {}, { grantId })).toMatchObject({ ok: false, error: { code: 'no_grant' } });
 
   // Revoke from the panel as well: the grant disappears from the list and from the relay.

@@ -7,7 +7,7 @@ import { useId, useState } from 'react';
 import { browser } from 'wxt/browser';
 import type { Agent } from '@/api/schemas';
 import { isRestrictedUrl } from '@/browser/policy';
-import { GRANT_MAX_ORIGINS } from '@/browser/protocol';
+import { GRANT_MAX_ORIGINS, isExactOrigin } from '@/browser/protocol';
 import type { BackgroundResponse, BrowserRequest } from '@/protocol/messages';
 import { errorText, useI18n, type Translate } from '@/shared/i18n';
 import { checkOrigin, originPermissionPattern } from '@/shared/origin';
@@ -26,7 +26,7 @@ export function parseOrigins(text: string, t: Translate): { ok: true; origins: s
   for (const line of lines) {
     const checked = checkOrigin(line);
     // An exact site: no wildcard, path, query or fragment beyond an optional trailing slash.
-    if (!checked.ok || checked.origin.includes('*') || line.replace(/\/$/, '').toLowerCase() !== checked.origin.toLowerCase()) return { ok: false, error: t('browser.allow.originInvalid', { origin: line }) };
+    if (!checked.ok || !isExactOrigin(checked.origin) || line.replace(/\/$/, '').toLowerCase() !== checked.origin.toLowerCase()) return { ok: false, error: t('browser.allow.originInvalid', { origin: line }) };
     if (isRestrictedUrl(checked.origin)) return { ok: false, error: t('browser.allow.originRestricted', { origin: line }) };
     if (!origins.includes(checked.origin)) origins.push(checked.origin);
   }

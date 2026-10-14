@@ -34,6 +34,8 @@ interface Running {
 
 const MESSAGES: Partial<Record<BrowserErrorCode, string>> = {
   cancelled: 'The command was cancelled',
+  grant_revoked: 'The person revoked the grant; ask them to grant access again',
+  grant_expired: 'The grant expired; ask the person to grant access again',
   timeout: 'The command reached its deadline',
   outcome_unknown: 'The command was interrupted after it may have changed the page; take a new snapshot',
   invalid_params: 'The command is not valid',

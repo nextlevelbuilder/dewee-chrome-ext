@@ -261,9 +261,7 @@ test('an agent drives the person’s own Chrome only as far as the person allows
     await expect(drawer.getByTestId('browser-grants').locator('li', { hasText: 'Super Agent' })).toHaveCount(0);
     await closeDrawer(panel);
     const [result] = await ask(panel, 'cb revoked', [browserCall({ action: 'snapshot', targetId: 't1' })]);
-    // The Gateway names a revoked grant the same way as an expired one.
-    expect(result).toContain('connected browser error [grant_expired]');
-    expect(result).toContain('revoked');
+    expect(result).toContain('connected browser error [grant_revoked]');
   });
 
   await test.step('Stop refuses commands with device_paused until Resume', async () => {

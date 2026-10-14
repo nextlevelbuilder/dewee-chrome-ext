@@ -13,6 +13,7 @@ export const ERROR_CODES = [
   'device_unresponsive',
   'no_grant',
   'grant_expired',
+  'grant_revoked',
   'origin_not_granted',
   'capability_not_granted',
   'unsupported_capability',
@@ -160,14 +161,24 @@ export type Device = z.infer<typeof deviceSchema>;
 // ---------- Methods (extension → Gateway) ----------
 
 const uuid = z.uuid();
-const deviceName = z.string().trim().min(1).max(80);
+export const DEVICE_NAME_MAX_BYTES = 100;
+/** No control or format characters (line breaks, bidi overrides, zero-width); at most 100 UTF-8 bytes. */
+export function isValidDeviceName(name: string): boolean {
+  return name.length > 0 && !/[\p{Cc}\p{Cf}]/u.test(name) && new TextEncoder().encode(name).length <= DEVICE_NAME_MAX_BYTES;
+}
+const deviceName = z.string().trim().min(1).max(80).refine(isValidDeviceName, 'device name: no control characters, at most 100 bytes');
 const deviceCapabilities = z.union([z.tuple([z.literal('standard')]), z.tuple([z.literal('standard'), z.literal('advanced')])]);
-/** `scheme://host[:port]` exactly, https (or http on loopback), no wildcard. */
+/**
+ * `scheme://host[:port]` exactly as `URL.origin` writes it (so international hosts are punycode),
+ * https (or http on loopback), no wildcard, no trailing dot, host at most 253 characters.
+ */
 export function isExactOrigin(value: string): boolean {
   try {
     const parsed = new URL(value);
+    const host = parsed.hostname;
     // The URL parser accepts `*` in a host name; v1 has no wildcards.
-    return parsed.origin === value && !parsed.hostname.includes('*') && (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname)));
+    if (parsed.origin !== value || host.includes('*') || host.endsWith('.') || host.length > 253) return false;
+    return parsed.protocol === 'https:' || (parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(host));
   } catch {
     return false;
   }
@@ -223,19 +234,21 @@ export type MethodResult<M extends RelayMethod> = z.output<(typeof methodResultS
 
 // ---------- Action results (sent in `browser.command.result`) ----------
 
-const pageResult = z.object({ tab, url: z.string(), title: z.string() }).strict();
+// The Gateway withholds a page result without its `url` (it checks it against the grant), so a
+// result that has none is a bug here and is reported as `internal` instead.
+const pageResult = z.object({ tab, url, title: z.string() }).strict();
 export const actionResultSchemas = {
   tabs: z.object({ tabs: z.array(z.object({ tab, url: z.string(), title: z.string(), active: z.boolean() }).strict()) }).strict(),
   open: pageResult,
   navigate: pageResult,
-  snapshot: z.object({ tab, url: z.string(), title: z.string(), generation, text: z.string().max(SNAPSHOT_MAX_CHARS) }).strict(),
+  snapshot: z.object({ tab, url, title: z.string(), generation, text: z.string().max(SNAPSHOT_MAX_CHARS) }).strict(),
   click: pageResult,
   type: pageResult,
   press: z.object({ tab }).strict(),
   scroll: z.object({ tab }).strict(),
   wait: z.object({ tab }).strict(),
   close: z.object({}).strict(),
-  screenshot: z.object({ tab, mime: z.literal('image/jpeg'), data_base64: z.string() }).strict(),
+  screenshot: z.object({ tab, url, mime: z.literal('image/jpeg'), data_base64: z.string() }).strict(),
 } satisfies Record<BrowserAction, z.ZodType>;
 export type ActionResult = { [A in BrowserAction]: z.infer<(typeof actionResultSchemas)[A]> };
 

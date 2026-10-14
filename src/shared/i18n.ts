@@ -290,6 +290,9 @@ const en = {
   'error.origin_permission_missing': 'Chrome has no access to one of the sites.',
   'error.permission_denied': 'The Gateway refused this request.',
   'error.failed_precondition': 'Connected browsing is turned off for this workspace. Ask a workspace admin to turn it on; this browser connects by itself once it is.',
+  'error.invalid_device_name': 'Use a shorter device name without line breaks or invisible characters.',
+  'error.device_revoked': 'This browser was removed from your devices. Register it again to allow agents.',
+  'error.agent_not_allowed': 'You can allow only your own agents and the workspace’s default agent.',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -579,6 +582,9 @@ const vi: Record<MessageKey, string> = {
   'error.origin_permission_missing': 'Chrome chưa có quyền truy cập một trong các trang.',
   'error.permission_denied': 'Gateway từ chối yêu cầu này.',
   'error.failed_precondition': 'Trình duyệt kết nối đang tắt cho workspace này. Hãy nhờ quản trị viên workspace bật lên; trình duyệt này sẽ tự kết nối khi được bật.',
+  'error.invalid_device_name': 'Hãy dùng tên thiết bị ngắn hơn, không xuống dòng và không có ký tự ẩn.',
+  'error.device_revoked': 'Trình duyệt này đã bị gỡ khỏi danh sách thiết bị của bạn. Hãy đăng ký lại để cho phép agent.',
+  'error.agent_not_allowed': 'Bạn chỉ có thể cho phép agent của chính mình và agent mặc định của workspace.',
 };
 
 export type Locale = 'en' | 'vi';

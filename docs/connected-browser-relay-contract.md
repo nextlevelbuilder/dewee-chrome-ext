@@ -37,9 +37,16 @@ Only API keys with `operator.write` that are bound to one user by credential may
 use the `browser.*` relay methods. The gateway master token, unbound keys,
 pairing-code connections and customer principals are refused with
 `UNAUTHORIZED` (the Gateway protocol's code for a caller that is not allowed).
-When the tenant has not enabled the feature, every method returns
-`FAILED_PRECONDITION`. Bad params are `INVALID_REQUEST`, another user's device or
-grant is `NOT_FOUND`, and limits are `RESOURCE_EXHAUSTED`.
+When the tenant has not enabled the feature, `browser.device.enroll`,
+`browser.device.attach`, `browser.device.heartbeat` and `browser.grant.create`
+return `FAILED_PRECONDITION`; listing, renaming and revoking devices and grants,
+`browser.control.state` and command ack/result stay available so access can
+always be seen and removed. Bad params are `INVALID_REQUEST`, another user's
+device or grant is `NOT_FOUND`, and limits are `RESOURCE_EXHAUSTED`.
+
+Frame size: the Gateway reads frames of at most 512 KB until
+`browser.device.attach` succeeds on the socket, then at most 2.2 MB (room for a
+1.5 MB screenshot as base64). A new `connect` on the same socket restores 512 KB.
 
 Keepalive: the extension sends `browser.device.heartbeat` every 20 s (this also
 keeps the MV3 worker alive, Chrome 116+). A device is offline 45 s after its last
@@ -63,14 +70,22 @@ All params are strict objects; unknown fields are rejected.
 | `browser.grant.revoke` | `{grant_id}` | `{}`; in-flight commands under it are cancelled. |
 | `browser.command.ack` | `{command_id}` | `{}`; the extension accepted the command and is executing it. |
 | `browser.command.result` | `{command_id, ok:true, result}` or `{command_id, ok:false, error:{code, message}}` | `{}` |
-| `browser.control.state` | `{device_id, state:"active" \| "paused" \| "stopped"}` | `{}`; local Pause/Stop. Both `paused` and `stopped` cancel in-flight commands (the extension cancels them locally and may send no result). While not `active` the Gateway refuses new commands with `device_paused`. |
+| `browser.control.state` | `{device_id, state:"active" \| "paused" \| "stopped"}` | `{}`; local Pause/Stop. Both `paused` and `stopped` cancel in-flight commands (the extension cancels them locally and may send no result). While not `active` the Gateway refuses new commands with `device_paused`. The state survives a re-attach (Gateway memory); the extension still re-sends it after attach, which also covers a Gateway restart. |
 
 Limits: `ttl_seconds` 60–28800 (default 3600); ≤ 20 origins and ≤ 20 agents per
 grant; origins are exact canonical `scheme://host[:port]`: lowercase, https (or
 http only for loopback), no default port, path, trailing slash or wildcard, no
-repeats. A non-canonical origin is refused (`INVALID_REQUEST`), never rewritten.
+repeats. Internationalized hosts are sent in punycode (`xn--...`, the form
+`URL.origin` gives); a trailing dot or a host over 253 characters is refused.
+A non-canonical origin is refused (`INVALID_REQUEST`), never rewritten.
 At most 10 devices per user and 20 active grants per device.
-`browser.grant.create` is accepted only from the device's own attached socket.
+`browser.grant.create` is accepted only from the device's own attached socket,
+and fails (`NOT_FOUND`) once the device is revoked. Every `agent_ids` entry must
+be an agent of the person's tenant that the person owns, or the tenant's default
+agent: unknown agents are `INVALID_REQUEST`, agents shared by another person are
+`UNAUTHORIZED`. Device names are at most 100 bytes and may not contain Unicode
+control or format characters (line breaks, bidi overrides, zero-width
+characters).
 
 Object shapes (every field always present unless marked optional):
 
@@ -115,7 +130,10 @@ Command deadlines default to 30 s and are capped at 120 s.
 `tab` is an opaque tab handle issued by the extension (`t1`, `t2`, ...), scoped
 to the device session. Raw `chrome.tabs` ids never leave the extension. Only tabs
 the agent opened under the grant ("owned tabs") can be driven; `tabs` lists only
-owned tabs.
+owned tabs. The Gateway also binds each tab handle to the grant whose `open`
+returned it (kept across reconnects until `close` or device revocation) and
+sends later commands on that tab under that grant only; a tab no grant opened is
+`tab_not_owned`.
 
 | Action | Class | Params | Result |
 |---|---|---|---|
@@ -129,10 +147,12 @@ owned tabs.
 | `scroll` | read | `{tab, direction:"up"\|"down", amount?:"page"\|"half"}` | `{tab}` |
 | `wait` | read | `{tab, ms}` (≤ 10000) or `{tab, text}` (appears within 10 s) | `{tab}` |
 | `close` | interact | `{tab}` | `{}` |
-| `screenshot` | read | `{tab}` — **advanced capability only** | `{tab, mime:"image/jpeg", data_base64}` (≤ 1.5 MB) |
+| `screenshot` | read | `{tab}` — **advanced capability only** | `{tab, url, mime:"image/jpeg", data_base64}` (≤ 1.5 MB) |
 
 Every `url` (requested and after navigation/redirect) must match a grant origin;
-otherwise `origin_not_granted`. `chrome://`, `chrome-extension://`, the Chrome
+otherwise `origin_not_granted`. `url` is required in the `open`, `navigate`,
+`snapshot`, `click`, `type` and `screenshot` results; the Gateway withholds a
+result without it (`internal`). `chrome://`, `chrome-extension://`, the Chrome
 Web Store, `file:`, `data:`, `javascript:`, `about:` (except `about:blank` while
 opening) are always refused (`restricted_page`).
 
@@ -146,7 +166,7 @@ bumps it and stale refs fail with `stale_ref`. Password fields, hidden inputs an
 ## Error codes
 
 `permission_denied`, `device_offline`, `device_paused`, `device_unresponsive`,
-`no_grant`, `grant_expired`, `origin_not_granted`, `capability_not_granted`,
+`no_grant`, `grant_expired`, `grant_revoked`, `origin_not_granted`, `capability_not_granted`,
 `unsupported_capability`, `restricted_page`, `tab_not_owned`, `tab_closed`,
 `stale_ref`, `element_not_found`, `element_not_interactable`, `sensitive_field`,
 `approval_denied`, `invalid_params`, `timeout`, `outcome_unknown`, `cancelled`,
@@ -157,11 +177,21 @@ bumps it and stale refs fail with `stale_ref`. Password fields, hidden inputs an
 
 The existing `browser` tool gains an optional `target` parameter:
 `"managed"` (default, unchanged behaviour) or `"connected"`. With `connected` it
-accepts only the actions above (`act` kinds map to click/type/press/scroll/wait),
-plus an optional `device` name/id when the principal has more than one online
-device. `evaluate`, `console`, cookies and raw CDP are never available on
-`connected`. Connected browsing is off unless the tenant enables it with the
-builtin tool setting `browser` → `{"connected": true}` (feature flag).
+accepts only the actions above (`act` kinds map to click/type/press/wait; a
+scroll is an `act` with `request.direction` and no kind, so the managed `kind`
+enum stays unchanged), plus an optional `device` name/id when the principal has
+more than one online device. `evaluate`, `console`, cookies and raw CDP are never
+available on `connected`. Connected browsing is off unless the tenant enables it
+with the builtin tool setting `browser` → `{"connected": true}` (feature flag).
+On a Gateway without the managed browser the tool is connected-only: offered only
+to agents of tenants with the flag on, its schema lists only connected actions,
+and a call without `target:"connected"` returns "managed browser not enabled".
+
+The tool runs only for runs bound to the person by the credential that started
+them (direct chat over an owner-bound API key or an authenticated session). Runs
+from chat channels are refused (`permission_denied`) until verified account
+linking exists. A command still running when its grant expires is cancelled
+(`grant_expired`); a revoked grant reports `grant_revoked`.
 
 The Gateway also checks every result: content from a page outside the grant is
 withheld (`origin_not_granted`), the `tabs` list hides the title and URL of tabs

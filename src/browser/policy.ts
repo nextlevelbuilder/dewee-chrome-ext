@@ -82,7 +82,8 @@ export class LocalGuard {
   /** Checks that need no browser call: local control state, grant, agent, capability. */
   checkGrant(command: BrowserCommand, grant: Grant | undefined, control: ControlState): GuardResult {
     if (control !== 'active') return refuse('device_paused', `Browser control is ${control} on this device`);
-    if (!grant || grant.revoked_at) return refuse('no_grant', 'No grant for this command');
+    if (!grant) return refuse('no_grant', 'No grant for this command');
+    if (grant.revoked_at) return refuse('grant_revoked', 'The grant was revoked');
     if (grantExpired(grant, this.deps.now())) return refuse('grant_expired', 'The grant expired');
     if (!grant.agent_ids.includes(command.agent_id)) return refuse('no_grant', 'This agent is not in the grant');
     const needs = ACTION_CLASS[command.action] === 'read' ? 'browser.read' : 'browser.control';
