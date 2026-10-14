@@ -11,8 +11,11 @@ import { useChat } from '@/chat/use-chat';
 import type { RespondFn } from '@/credentials/respond-types';
 import { callBackground } from '@/protocol/messages';
 import { errorText, useI18n } from '@/shared/i18n';
-import { BrandMark, IconCompose, IconSettings, IconSidebar } from '@/shared/icons';
+import { BrandMark, IconBrowser, IconCompose, IconSettings, IconSidebar } from '@/shared/icons';
 import { withSelectedWorkspace, withWorkspaceSelection, workspaceSelectionOf, type Profile, type Settings } from '@/shared/settings';
+import { BrowserActivity } from './browser/BrowserActivity';
+import { BrowserControlDrawer } from './browser/BrowserControlDrawer';
+import { useBrowserControl } from './browser/use-browser-control';
 import { AgentPicker } from './components/AgentPicker';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
@@ -62,6 +65,13 @@ export function ChatShell({
   /** Where focus goes once the drawer has closed and the rest of the panel is no longer inert. */
   const drawerReturn = useRef<'toggle' | 'composer'>('toggle');
   const drawerWasOpen = useRef(false);
+  const browserToggleRef = useRef<HTMLButtonElement>(null);
+  const browserWasOpen = useRef(false);
+  const browserEnabled = settings.prefs.connectedBrowser;
+  const browserControl = useBrowserControl(browserEnabled);
+  const [showBrowser, setShowBrowser] = useState(false);
+  const browserOpen = showBrowser && browserEnabled;
+  const closeBrowser = useCallback(() => setShowBrowser(false), []);
 
   const workspaces = useWorkspaces(client, onAuthError);
   const askDraft = useAskDraft();
@@ -170,11 +180,17 @@ export function ChatShell({
     drawerWasOpen.current = drawerOpen;
   }, [drawerOpen]);
 
-
+  useLayoutEffect(() => {
+    if (browserWasOpen.current && !browserOpen) browserToggleRef.current?.focus();
+    browserWasOpen.current = browserOpen;
+  }, [browserOpen]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && drawerOpen) {
+      if (event.key === 'Escape' && browserOpen) {
+        event.preventDefault();
+        closeBrowser();
+      } else if (event.key === 'Escape' && drawerOpen) {
         // Handled at the window so it still works after focus falls out of a re-rendered list.
         event.preventDefault();
         closeDrawer();
@@ -189,7 +205,7 @@ export function ChatShell({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [newChat, busy, drawerOpen, closeDrawer]);
+  }, [newChat, busy, drawerOpen, closeDrawer, browserOpen, closeBrowser]);
 
   const deweeUrl = workspaceId && profile.kind === 'cloud' ? `${profile.origin}/workspaces/${encodeURIComponent(workspaceId)}` : profile.origin;
   const profileOptions = settings.profiles;
@@ -197,7 +213,7 @@ export function ChatShell({
   return (
     <div className="shell">
       {/* While the drawer is open the rest of the panel is inert, so focus and screen readers stay in it. */}
-      <div className="shell-content" inert={drawerOpen || undefined}>
+      <div className="shell-content" inert={drawerOpen || browserOpen || undefined}>
       <header className="shell-header">
         <div className="header-row">
           {agentKey ? (
@@ -242,6 +258,21 @@ export function ChatShell({
           {agentKey ? (
             <button type="button" className="btn btn-ghost icon" aria-label={t('sessions.new')} title={`${t('sessions.new')} (Alt+N)`} onClick={newChat} disabled={busy}>
               <IconCompose />
+            </button>
+          ) : null}
+          {browserEnabled ? (
+            <button
+              ref={browserToggleRef}
+              type="button"
+              className="btn btn-ghost icon"
+              aria-label={t('browser.title')}
+              title={t('browser.title')}
+              aria-expanded={browserOpen}
+              aria-controls="browser-drawer"
+              data-testid="browser-toggle"
+              onClick={() => setShowBrowser(true)}
+            >
+              <IconBrowser />
             </button>
           ) : null}
           <button type="button" className="btn btn-ghost icon" aria-label={t('app.settings')} title={t('app.settings')} onClick={() => void browser.runtime.openOptionsPage()}>
@@ -303,6 +334,8 @@ export function ChatShell({
         {agents.data && agentList.length === 0 ? <p className="notice">{t('header.noAgents')}</p> : null}
       </header>
 
+      {browserControl.state ? <BrowserActivity state={browserControl.state} call={browserControl.call} /> : null}
+
       <main className="chat-main">
         {agentKey && workspaceId ? (
           <MessageList state={chat.state} agentName={agentName} respond={respond} deweeUrl={deweeUrl} display={display} onRetry={(message) => void chat.retry(message)} onLoadOlder={() => void chat.loadOlder()} onReload={() => void chat.reload()} onShowSessions={() => {
@@ -349,6 +382,20 @@ export function ChatShell({
             canLoadMore={sessionLimit < MAX_SESSION_LIMIT}
             onRetry={sessions.reload}
           />
+        </div>
+      ) : null}
+
+      {browserOpen ? (
+        <div className="drawer" id="browser-drawer" role="dialog" aria-modal="true" aria-label={t('browser.title')}>
+          <div className="drawer-scrim" aria-hidden="true" onClick={closeBrowser} />
+          {browserControl.state ? (
+            <BrowserControlDrawer state={browserControl.state} agents={agentList} call={browserControl.call} onClose={closeBrowser} />
+          ) : (
+            <section className="browser-panel" aria-busy="true">
+              <div className="skeleton" style={{ height: 36 }} />
+              <div className="skeleton" style={{ height: 64 }} />
+            </section>
+          )}
         </div>
       ) : null}
     </div>

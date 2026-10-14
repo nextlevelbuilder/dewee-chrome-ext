@@ -61,6 +61,16 @@ export async function authorizationFor(profileId: string, fetchImpl: typeof fetc
   return `Bearer ${next.kind === 'oauth' ? next.accessToken : next.apiKey}`;
 }
 
+/**
+ * The personal API key of a self-hosted profile, for the connected-browser relay `connect` frame.
+ * Only the service worker calls this; the key is never sent to a page or content script.
+ */
+export async function apiKeyFor(profileId: string): Promise<string> {
+  const credential = await credentialOf(profileId);
+  if (credential.kind !== 'api_key') throw new DeweeApiError(400, 'invalid_request', 'Connected browser needs a self-hosted API key');
+  return credential.apiKey;
+}
+
 /** Forced renewal after a 401. API keys cannot be renewed: the profile needs a new key. */
 export async function renewFor(profileId: string, fetchImpl: typeof fetch = fetch): Promise<void> {
   const credential = await credentialOf(profileId);

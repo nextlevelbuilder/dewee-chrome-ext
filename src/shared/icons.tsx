@@ -53,6 +53,16 @@ export const IconLock = icon(
     <path d="M8 11V7a4 4 0 0 1 8 0v4" />
   </>,
 );
+/** Browser control: a window with a pointer. */
+export const IconBrowser = icon(
+  <>
+    <rect x="3" y="4" width="18" height="15" rx="2.5" />
+    <path d="M3 8.5h18" />
+    <path d="m12 12 5 2-2.2.9L14 17z" />
+  </>,
+);
+export const IconPause = icon(<path d="M9 5v14M15 5v14" />);
+export const IconPlay = icon(<path d="M7 5v14l11-7z" />);
 export const IconCheck = icon(<path d="M20 6 9 17l-5-5" />);
 export const IconSparkle = icon(<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z" />);
 export const IconExternal = icon(

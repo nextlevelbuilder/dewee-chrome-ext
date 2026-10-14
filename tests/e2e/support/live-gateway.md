@@ -7,6 +7,7 @@ Runs the live specs against a real Dewee Gateway (and, for Cloud, a local Dewee 
 | `live-selfhosted.spec.ts` | B1 to B4, E1: connect, agents, streaming, stop, key revocation, history | steps 1 to 3 |
 | `live-resilience.spec.ts` | E: reopening, service worker restart, offline mid-stream, cancelled run | steps 1 to 3; port `18792` free (a cuttable TCP relay to the Gateway) |
 | `live-credentials.spec.ts` | C credential cards, D admin policy, E double submit and lost respond | steps 1 to 3; step 5 for the database checks |
+| `live-connected-browser.spec.ts` | Connected browser: feature flag off and on, register, grants per agent and site, open/snapshot/click/type, password redaction, approval denial, revoke, Stop | steps 1 to 3 and 7; a Gateway with the browser tool enabled |
 | `live-cloud.spec.ts` | A Cloud sign-in, workspace, Super Agent chat | step 6 |
 
 Every spec skips itself when its environment is missing, so CI stays green without a gateway.
@@ -58,7 +59,7 @@ It prints only ids. The extension only ever uses the personal key. The admin tok
 
 ```bash
 pnpm build:e2e
-npx playwright test tests/e2e/live-selfhosted.spec.ts tests/e2e/live-resilience.spec.ts tests/e2e/live-credentials.spec.ts
+npx playwright test tests/e2e/live-selfhosted.spec.ts tests/e2e/live-resilience.spec.ts tests/e2e/live-credentials.spec.ts tests/e2e/live-connected-browser.spec.ts
 ```
 
 Evidence screenshots go to `test-results/live/`. Playwright empties `test-results/` at the start of each run.
@@ -91,3 +92,17 @@ Run the Dewee app in self-hosted node mode on `127.0.0.1:4321`, in front of the 
 - Create the owner (`POST /api/setup/owner`), a workspace, a provider pointing at the stub (`apiBase` `http://127.0.0.1:18791/v1`, model `stub-model`) and the Super Agent, until the workspace reaches `agent_bootstrapped`.
 
 Then set `E2E_CLOUD_ORIGIN=http://127.0.0.1:4321`, `E2E_CLOUD_EMAIL` and `E2E_CLOUD_PASSWORD` (the owner's test password) and run `npx playwright test tests/e2e/live-cloud.spec.ts`. The spec types the Cloud URL into the connect form, so the normal e2e build works. `launchWebAuthFlow` opens a window that Playwright sees as a page: the spec logs in there and clicks Allow on the consent screen. The password is typed only into the app's login page.
+
+## 7. Connected browser
+
+The Gateway registers the `browser` tool only when its browser is enabled: the system config `tools.browser.enabled` or `GOCLAW_BROWSER_REMOTE_URL`. Its log then shows `browser tool enabled`; without it the agent has no `browser` tool at all. Connected browsing is then off per workspace until the builtin tool setting `browser` has `{"connected": true}`. The spec turns that feature flag on and off itself, as a workspace admin:
+
+```bash
+curl -X PUT http://127.0.0.1:18790/v1/tools/builtin/browser/tenant-config \
+  -H "Authorization: Bearer $E2E_GATEWAY_ADMIN_TOKEN" -H "X-GoClaw-Tenant-Id: $E2E_WORKSPACE_ID" \
+  -H 'Content-Type: application/json' -d '{"settings":{"connected":true}}'
+```
+
+It starts with the flag off and sets it off again at the end. The stub model calls `browser` with `target: "connected"`; a loopback page server on a random port plays the site.
+
+Set `E2E_DEWEE_CLI` to a `dewee` binary built from the same checkout to also check `dewee browser devices list --json` and `dewee browser grants list`, which use the personal key, and that the traces (`dewee traces list --session` and `traces get`, with the admin token) record each browser action with its outcome but no typed text in browser span inputs. Before the run the spec removes the person's devices left from earlier runs (10 per person), and at the end it removes its own device from the side panel.

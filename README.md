@@ -6,6 +6,7 @@ Chat with your Dewee agents, with Super Agent pinned first, in Chrome's side pan
 - **Workspaces and agents:** pick a workspace, search agents, and keep separate sessions per agent.
 - **Reliable chat:** streaming, stop, retry, history, new chat. If the connection drops, the panel checks the server instead of sending your message twice.
 - **Credential cards:** secrets stay in the form and go only to Dewee's respond endpoint. Nothing secret is stored by the extension.
+- **Connected browser (self-hosted, opt-in):** turn on *Connected browser* in Settings, register this browser, and allow chosen agents on chosen sites for a limited time. Agents can then open, read, and act in tabs they open themselves, never in your other tabs. Risky clicks wait for your approval, passwords and payment fields are never read or typed, and *Pause*, *Stop* and *Revoke* are always one click away.
 - **Pending badge**, English and Vietnamese, light/dark/system theme, keyboard shortcuts.
 
 ## Install (development build)
@@ -40,6 +41,7 @@ By default the credential is kept only until Chrome closes. Tick *Remember on th
 - [Extension API contract](docs/api-contract.md)
 - [Authentication threat model](docs/auth-threat-model.md)
 - [Credential request threat model](docs/credential-threat-model.md)
+- [Connected browser threat model](docs/browser-control-threat-model.md) and [relay contract](docs/connected-browser-relay-contract.md)
 - [Development](docs/development.md) and [contributor workflow](AGENTS.md)
 
 ## License

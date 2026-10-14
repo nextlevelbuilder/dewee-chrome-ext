@@ -51,7 +51,9 @@ Rules:
 - Never use the Dewee gateway master token as a client credential. Self-hosted mode uses a personal scoped API key (`operator.read`/`operator.write`).
 - Never render agent-generated HTML. Cards render from a fixed list of kinds validated with Zod; markdown is sanitized with DOMPurify.
 - No remote code, no `eval`, strict extension CSP. Host permissions are requested per gateway origin at runtime, never `<all_urls>`.
-- The side panel never reads the active page. The only exception is the opt-in "Ask Dewee" page script, which sends the text the person selected (never form fields) when they click its button, and only as an editable draft.
+- The side panel never reads the active page or the person's other tabs. There are two opt-in exceptions, both off by default:
+  - The "Ask Dewee" page script sends the text the person selected (never form fields) when they click its button, and only as an editable draft.
+  - "Connected browser" (self-hosted only) lets an agent read and act only in tabs it opened itself, only on exact origins the person allowed for that agent in the panel, only until the grant expires or is revoked, and only after the person granted Chrome host permission for those origins. Password, hidden, payment and one-time-code values are never read or typed, page content is never stored, and Pause/Stop/Revoke work locally. See [docs/browser-control-threat-model.md](docs/browser-control-threat-model.md).
 
 ## Code layout
 

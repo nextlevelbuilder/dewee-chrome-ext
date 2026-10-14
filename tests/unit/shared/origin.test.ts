@@ -1,4 +1,4 @@
-import { checkOrigin, isLoopbackHost, originPermissionPattern } from '../../../src/shared/origin';
+import { checkOrigin, isLoopbackHost, originPermissionPattern, patternCoversExactHost } from '../../../src/shared/origin';
 
 describe('checkOrigin', () => {
   it('keeps only the origin of an https URL', () => {
@@ -47,6 +47,27 @@ describe('isLoopbackHost', () => {
     expect(isLoopbackHost('127.0.0.1')).toBe(true);
     expect(isLoopbackHost('dev.localhost')).toBe(false);
     expect(isLoopbackHost('example.com')).toBe(false);
+  });
+});
+
+describe('patternCoversExactHost', () => {
+  it('accepts a pattern for exactly that host', () => {
+    expect(patternCoversExactHost('https://shop.example.test/*', 'https://shop.example.test')).toBe(true);
+    expect(patternCoversExactHost('https://Shop.Example.test/*', 'https://shop.example.test')).toBe(true);
+    expect(patternCoversExactHost('http://localhost/*', 'http://localhost:3000')).toBe(true);
+    expect(patternCoversExactHost('http://localhost:3000/*', 'http://localhost:3000')).toBe(true);
+    expect(patternCoversExactHost('https://shop.example.test:443/*', 'https://shop.example.test')).toBe(true);
+  });
+
+  it('refuses wildcards, other hosts, schemes and ports', () => {
+    expect(patternCoversExactHost('https://*/*', 'https://shop.example.test')).toBe(false);
+    expect(patternCoversExactHost('https://*.example.test/*', 'https://shop.example.test')).toBe(false);
+    expect(patternCoversExactHost('<all_urls>', 'https://shop.example.test')).toBe(false);
+    expect(patternCoversExactHost('*://shop.example.test/*', 'https://shop.example.test')).toBe(false);
+    expect(patternCoversExactHost('http://shop.example.test/*', 'https://shop.example.test')).toBe(false);
+    expect(patternCoversExactHost('https://example.test/*', 'https://shop.example.test')).toBe(false);
+    expect(patternCoversExactHost('http://localhost:4000/*', 'http://localhost:3000')).toBe(false);
+    expect(patternCoversExactHost('https://shop.example.test/*', 'not a url')).toBe(false);
   });
 });
 

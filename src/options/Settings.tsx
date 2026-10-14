@@ -221,6 +221,7 @@ export function Settings() {
             <PrefToggle pref="showReasoning" label={t('settings.showReasoning')} hint={t('settings.showReasoning.hint')} settings={settings} update={update} />
             <PrefToggle pref="showToolDetails" label={t('settings.showToolDetails')} hint={t('settings.showToolDetails.hint')} settings={settings} update={update} />
             <AskToggle settings={settings} update={update} />
+            <PrefToggle pref="connectedBrowser" label={t('settings.connectedBrowser')} hint={t('settings.connectedBrowser.hint')} settings={settings} update={update} />
           </div>
           <p className="privacy muted small">
             <IconLock size={13} />

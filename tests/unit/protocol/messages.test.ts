@@ -37,7 +37,21 @@ describe('requestSchema', () => {
 
   it('defines no request type that carries a secret field', () => {
     const fields = requestSchema.options.flatMap((option) => Object.keys(option.shape)).sort();
-    expect([...new Set(fields)]).toEqual(['profileId', 'type']);
+    // Every field is listed so a new one has to be reviewed here; none of them is a secret.
+    expect([...new Set(fields)]).toEqual([
+      'agentIds',
+      'approve',
+      'capabilities',
+      'deviceId',
+      'grantId',
+      'id',
+      'name',
+      'origins',
+      'profileId',
+      'state',
+      'ttlSeconds',
+      'type',
+    ]);
   });
 });
 
