@@ -115,6 +115,8 @@ describe('contract limits', () => {
     expect(isValidDeviceName('Work\nlaptop')).toBe(false);
     expect(isValidDeviceName('Work‮laptop')).toBe(false);
     expect(isValidDeviceName('Work​laptop')).toBe(false);
+    expect(isValidDeviceName('Work\u2028laptop')).toBe(false);
+    expect(isValidDeviceName('Work\u2029laptop')).toBe(false);
     expect(isValidDeviceName('ứ'.repeat(34))).toBe(false);
     expect(schema.safeParse({ device_id: DEVICE_ID, name: 'Work‮laptop' }).success).toBe(false);
   });

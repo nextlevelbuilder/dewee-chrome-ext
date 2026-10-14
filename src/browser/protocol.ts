@@ -162,9 +162,9 @@ export type Device = z.infer<typeof deviceSchema>;
 
 const uuid = z.uuid();
 export const DEVICE_NAME_MAX_BYTES = 100;
-/** No control or format characters (line breaks, bidi overrides, zero-width); at most 100 UTF-8 bytes. */
+/** No control or format characters (line breaks, bidi overrides, zero-width) and no line/paragraph separators; at most 100 UTF-8 bytes. */
 export function isValidDeviceName(name: string): boolean {
-  return name.length > 0 && !/[\p{Cc}\p{Cf}]/u.test(name) && new TextEncoder().encode(name).length <= DEVICE_NAME_MAX_BYTES;
+  return name.length > 0 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name) && new TextEncoder().encode(name).length <= DEVICE_NAME_MAX_BYTES;
 }
 const deviceName = z.string().trim().min(1).max(80).refine(isValidDeviceName, 'device name: no control characters, at most 100 bytes');
 const deviceCapabilities = z.union([z.tuple([z.literal('standard')]), z.tuple([z.literal('standard'), z.literal('advanced')])]);
@@ -235,7 +235,8 @@ export type MethodResult<M extends RelayMethod> = z.output<(typeof methodResultS
 // ---------- Action results (sent in `browser.command.result`) ----------
 
 // The Gateway withholds a page result without its `url` (it checks it against the grant), so a
-// result that has none is a bug here and is reported as `internal` instead.
+// result without a valid one is reported as `internal` instead, or as `outcome_unknown` after an
+// interaction (the action may have run).
 const pageResult = z.object({ tab, url, title: z.string() }).strict();
 export const actionResultSchemas = {
   tabs: z.object({ tabs: z.array(z.object({ tab, url: z.string(), title: z.string(), active: z.boolean() }).strict()) }).strict(),

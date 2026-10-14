@@ -88,6 +88,14 @@ describe('CommandRunner', () => {
     expect(results[0]).toMatchObject({ ok: false, error: { code: 'internal' } });
   });
 
+  it('reports an unreportable result after an interaction as outcome_unknown, after a read as internal', async () => {
+    const longUrl = `https://shop.example.test/?q=${'a'.repeat(5000)}`;
+    const { runner, results } = setup(async () => ({ tab: 't1', url: longUrl, title: 'Shop' }));
+    await runner.handle(payload('click', { tab: 't1', ref: 'e3', generation: 2 }));
+    await runner.handle(payload('snapshot', { tab: 't1' }));
+    expect(results.map((r) => (r.error as { code: string }).code)).toEqual(['outcome_unknown', 'internal']);
+  });
+
   it('cancels a running command before any side effect as cancelled', async () => {
     const { runner, results, log } = setup((_command, signal) => untilAborted(signal));
     const raw = payload('wait', { tab: 't1', ms: 5_000 });

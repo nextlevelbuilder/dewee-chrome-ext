@@ -292,7 +292,7 @@ const en = {
   'error.failed_precondition': 'Connected browsing is turned off for this workspace. Ask a workspace admin to turn it on; this browser connects by itself once it is.',
   'error.invalid_device_name': 'Use a shorter device name without line breaks or invisible characters.',
   'error.device_revoked': 'This browser was removed from your devices. Register it again to allow agents.',
-  'error.agent_not_allowed': 'You can allow only your own agents and the workspace’s default agent.',
+  'error.grant_unauthorized': 'Dewee did not allow this. You can allow only your own agents and the workspace’s default agent, and this API key needs permission to manage this browser.',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -584,7 +584,7 @@ const vi: Record<MessageKey, string> = {
   'error.failed_precondition': 'Trình duyệt kết nối đang tắt cho workspace này. Hãy nhờ quản trị viên workspace bật lên; trình duyệt này sẽ tự kết nối khi được bật.',
   'error.invalid_device_name': 'Hãy dùng tên thiết bị ngắn hơn, không xuống dòng và không có ký tự ẩn.',
   'error.device_revoked': 'Trình duyệt này đã bị gỡ khỏi danh sách thiết bị của bạn. Hãy đăng ký lại để cho phép agent.',
-  'error.agent_not_allowed': 'Bạn chỉ có thể cho phép agent của chính mình và agent mặc định của workspace.',
+  'error.grant_unauthorized': 'Dewee không cho phép thao tác này. Bạn chỉ có thể cho phép agent của chính mình và agent mặc định của workspace, và API key này cần quyền quản lý trình duyệt này.',
 };
 
 export type Locale = 'en' | 'vi';

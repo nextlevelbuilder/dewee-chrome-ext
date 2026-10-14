@@ -4,10 +4,10 @@
  * API key. A profile switch, sign-out or turning the preference off closes the socket, cancels
  * running commands and forgets grants and owned tabs, so nothing carries over to another profile.
  *
- * Kept in storage: the server-generated device id and name per profile and the ids of grants the
- * person created here (`storage.local`, not secrets), and, for a worker restart, the owned-tab
- * handles and the Pause/Stop state (`storage.session`). Never kept: page content, snapshots,
- * typed text, the API key.
+ * Kept in storage: the server-generated device id and name per profile, the ids of grants the
+ * person created here and the person's last Pause/Stop/Resume (`storage.local`, not secrets), and,
+ * for a worker restart, the owned-tab handles (`storage.session`). Never kept: page content,
+ * snapshots, typed text, the API key.
  *
  * Grants are not taken on the Gateway's word: one is used only if this browser created it, it
  * names this device, and every origin in it is an exact origin.
@@ -43,7 +43,8 @@ export const FEATURE_DISABLED = 'failed_precondition';
 
 const deviceRecord = z.object({ device_id: z.uuid(), name: z.string() });
 const ownGrantsRecord = z.array(z.string().min(1)).max(OWN_GRANTS_MAX);
-const controlRecord = z.enum(['active', 'paused', 'stopped']);
+/** The person's last Pause/Stop/Resume for the device (not secret). */
+const controlRecord = z.object({ device_id: z.uuid().nullable(), state: z.enum(['active', 'paused', 'stopped']) }).strict();
 
 export interface SessionDeps {
   api?: BrowserApi;
@@ -73,6 +74,9 @@ function errorCode(error: unknown): string {
   return 'internal_error';
 }
 
+/** Same members, ignoring order (the lists hold no repeats). */
+const sameSet = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((item) => b.includes(item));
+
 const tabOf = (params: object): string | undefined => ('tab' in params && typeof params.tab === 'string' ? params.tab : undefined);
 
 export class BrowserSession {
@@ -90,6 +94,10 @@ export class BrowserSession {
   /** Grant ids created from this browser for the current profile. */
   private ownGrants: string[] = [];
   private control: ControlState = 'active';
+  /** True when `control` is the person's own stored choice, which is re-sent after attach. */
+  private controlChosen = false;
+  /** The transport whose socket finished `browser.device.attach` (or has no device to attach). */
+  private attachedTransport: RelayTransport | null = null;
   private readonly tabs = new TabRegistry();
   private readonly activities = new Map<string, Activity>();
   private readonly ports = new Set<PanelPort>();
@@ -167,14 +175,18 @@ export class BrowserSession {
     this.profileId = profile.id;
     this.origin = profile.origin;
     this.refused = false;
-    const [local, session] = await Promise.all([
+    const [local, session, storedControl] = await Promise.all([
       browser.storage.local.get([deviceKey(profile.id), grantsKey(profile.id)]),
-      browser.storage.session.get([controlKey(profile.id), tabsKey(profile.id)]),
+      browser.storage.session.get([tabsKey(profile.id)]),
+      browser.storage.local.get(controlKey(profile.id)).then(
+        (items) => ({ read: true as const, value: items[controlKey(profile.id)] }),
+        () => ({ read: false as const, value: undefined }),
+      ),
     ]);
     if (epoch !== this.epoch) return;
     this.device = deviceRecord.safeParse(local[deviceKey(profile.id)]).data ?? null;
     this.ownGrants = ownGrantsRecord.safeParse(local[grantsKey(profile.id)]).data ?? [];
-    this.control = controlRecord.safeParse(session[controlKey(profile.id)]).data ?? 'active';
+    this.restoreControl(storedControl);
     this.tabs.restore(session[tabsKey(profile.id)]);
     const profileId = profile.id;
     const transport: RelayTransport = new RelayTransport({
@@ -200,6 +212,7 @@ export class BrowserSession {
         }
         // A dropped link stops the commands it carried: their results could not be reported anyway.
         if (state !== 'connected') {
+          if (this.attachedTransport === transport) this.attachedTransport = null;
           this.runner.cancelAll();
           this.approvals.denyAll();
         }
@@ -230,23 +243,60 @@ export class BrowserSession {
     this.activities.clear();
     this.connection = 'offline';
     this.error = undefined;
+    // The person's Pause/Stop stays in storage.local for when this profile comes back.
     this.control = 'active';
-    await browser.storage.session.remove([tabsKey(profileId), controlKey(profileId)]).catch(() => undefined);
+    this.controlChosen = false;
+    this.attachedTransport = null;
+    await browser.storage.session.remove([tabsKey(profileId)]).catch(() => undefined);
+  }
+
+  /**
+   * Pause/Stop survives a Chrome restart and a profile switch. Three cases:
+   * - a record for this device: the person's last choice, used locally and re-sent after attach;
+   * - no record (never chose, or a new device): `active` locally, nothing sent, the Gateway keeps its state;
+   * - the record cannot be read or is damaged: `paused` locally and nothing sent, so a Pause is never
+   *   lifted by accident; the person sees Paused and can Resume.
+   */
+  private restoreControl(stored: { read: boolean; value: unknown }): void {
+    this.controlChosen = false;
+    this.control = 'active';
+    if (!stored.read) {
+      this.control = 'paused';
+      return;
+    }
+    if (stored.value === undefined) return;
+    const parsed = controlRecord.safeParse(stored.value);
+    if (!parsed.success) {
+      this.control = 'paused';
+      return;
+    }
+    if (parsed.data.device_id !== (this.device?.device_id ?? null)) return;
+    this.control = parsed.data.state;
+    this.controlChosen = true;
+  }
+
+  private async persistControl(): Promise<void> {
+    const profileId = this.profileId;
+    if (!profileId) return;
+    await browser.storage.local.set({ [controlKey(profileId)]: { device_id: this.device?.device_id ?? null, state: this.control } }).catch(() => undefined);
   }
 
   private async attach(transport: RelayTransport, epoch: number): Promise<void> {
     const device = this.device;
     if (!device) {
       this.setGrants([]);
+      if (epoch === this.epoch) this.attachedTransport = transport;
       return;
     }
     try {
       const attached = await transport.request('browser.device.attach', { device_id: device.device_id, capabilities: ['standard'] });
       if (epoch !== this.epoch) return;
       this.setGrants(attached.grants);
-      // Always re-send Pause/Stop/active: the Gateway may still hold a state the person changed
-      // while offline, or none at all after its own restart.
-      void transport.request('browser.control.state', { device_id: device.device_id, state: this.control }).catch(() => undefined);
+      this.attachedTransport = transport;
+      // Re-send the person's own Pause/Stop/Resume: the Gateway may hold an older state, or none
+      // after its own restart. Without a stored choice nothing is sent, so `active` never
+      // replaces a pause the extension does not know about.
+      if (this.controlChosen) void transport.request('browser.control.state', { device_id: device.device_id, state: this.control }).catch(() => undefined);
     } catch (error) {
       // The device was revoked or belongs to someone else: forget it; the person can register again.
       if (error instanceof RelayError && error.code.toLowerCase() === 'not_found') {
@@ -272,7 +322,10 @@ export class BrowserSession {
     this.tabs.clear();
     this.persistTabs();
     this.ownGrants = [];
-    if (profileId) await browser.storage.local.remove([deviceKey(profileId), grantsKey(profileId)]).catch(() => undefined);
+    // The choice belonged to the removed device; keep it in memory only (a new device is enrolled
+    // from this state and the person still sees it).
+    this.controlChosen = false;
+    if (profileId) await browser.storage.local.remove([deviceKey(profileId), grantsKey(profileId), controlKey(profileId)]).catch(() => undefined);
     this.broadcast();
   }
 
@@ -306,6 +359,8 @@ export class BrowserSession {
   private setGrants(list: Grant[]): void {
     this.grants.clear();
     for (const grant of list) if (this.acceptable(grant)) this.grants.set(grant.grant_id, grant);
+    // A grant the Gateway no longer lists is gone: stop what runs under it, approvals included.
+    this.runner.cancelWhere((command) => !this.grants.has(command.grant_id), 'grant_revoked');
     for (const tab of this.tabs.all()) if (!this.grants.has(tab.grantId)) this.tabs.releaseGrant(tab.grantId);
     this.persistTabs();
     this.broadcast();
@@ -434,6 +489,7 @@ export class BrowserSession {
       if (this.mode !== 'ready' || !transport?.isReady) return { ok: false, code: 'device_offline' };
       switch (request.type) {
         case 'browser.enroll': {
+          if (this.attachedTransport !== transport) return { ok: false, code: 'device_offline' };
           const os = await platformOs();
           const name = request.name.trim() || deviceNameFor(os);
           if (!isValidDeviceName(name)) return { ok: false, code: 'invalid_device_name' };
@@ -442,6 +498,11 @@ export class BrowserSession {
           if (!profileId || this.transport !== transport) return { ok: false, code: 'device_offline' };
           this.device = { device_id, name };
           await browser.storage.local.set({ [deviceKey(profileId)]: this.device });
+          // A Pause/Stop the person set before registering applies to the new device too.
+          if (this.controlChosen || this.control !== 'active') {
+            this.controlChosen = true;
+            await this.persistControl();
+          }
           await this.attach(transport, this.epoch);
           this.broadcast();
           return { ok: true };
@@ -477,6 +538,9 @@ export class BrowserSession {
   private async createGrant(transport: RelayTransport, request: Extract<BrowserRequest, { type: 'browser.grant.create' }>): Promise<BackgroundResponse> {
     const device = this.device;
     if (!device) return { ok: false, code: 'not_enrolled' };
+    // Only from a socket that finished attach: the Gateway accepts grant.create only there, and a
+    // refusal from a socket still attaching must not be taken for a removed device.
+    if (this.attachedTransport !== transport) return { ok: false, code: 'device_offline' };
     const origins: string[] = [];
     for (const input of request.origins) {
       const checked = checkOrigin(input);
@@ -496,16 +560,17 @@ export class BrowserSession {
         if (this.transport === transport) await this.forgetDevice();
         return { ok: false, code: 'device_revoked' };
       }
-      // Only the person's own agents and the workspace's default agent can be allowed.
-      if (code === 'unauthorized') return { ok: false, code: 'agent_not_allowed' };
+      // An agent the person may not allow (shared by someone else), or a key without the right.
+      if (code === 'unauthorized') return { ok: false, code: 'grant_unauthorized' };
       throw error;
     }
     if (this.transport !== transport) return { ok: false, code: 'device_offline' };
     await this.rememberGrant(grant.grant_id);
-    // The Gateway's copy must match what was asked for; otherwise it is not used.
-    const matches = grant.origins.length === origins.length && grant.origins.every((origin) => origins.includes(origin));
-    if (!matches || !this.acceptable(grant)) {
+    // The Gateway's copy must be exactly what the person approved: sites, agents and capabilities.
+    if (!sameSet(grant.origins, origins) || !sameSet(grant.agent_ids, request.agentIds) || !sameSet(grant.capabilities, capabilities) || !this.acceptable(grant)) {
       this.forgetGrantId(grant.grant_id);
+      // It exists on the Gateway, so withdraw it there as well (best effort).
+      void transport.request('browser.grant.revoke', { grant_id: grant.grant_id }).catch(() => undefined);
       return { ok: false, code: 'invalid_response' };
     }
     this.grants.set(grant.grant_id, grant);
@@ -515,7 +580,8 @@ export class BrowserSession {
 
   private async setControl(state: ControlState): Promise<void> {
     this.control = state;
-    if (this.profileId) await browser.storage.session.set({ [controlKey(this.profileId)]: state }).catch(() => undefined);
+    this.controlChosen = true;
+    await this.persistControl();
     if (state !== 'active') {
       this.runner.cancelAll();
       this.approvals.denyAll();
@@ -525,8 +591,10 @@ export class BrowserSession {
       this.tabs.clear();
       this.persistTabs();
     }
+    // Not yet attached: attach re-sends the stored choice once it completes.
     const device = this.device;
-    if (device && this.transport?.isReady) await this.transport.request('browser.control.state', { device_id: device.device_id, state }).catch(() => undefined);
+    const transport = this.transport;
+    if (device && transport?.isReady && this.attachedTransport === transport) await transport.request('browser.control.state', { device_id: device.device_id, state }).catch(() => undefined);
     this.broadcast();
   }
 

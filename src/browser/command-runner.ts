@@ -10,7 +10,7 @@
  * resend a command it already dispatched (it reports `outcome_unknown` or `timeout` instead).
  */
 import { CommandError, type ExecutionContext } from './executor';
-import { actionResultSchemas, parseCommand, type BrowserCommand, type BrowserErrorCode, type MethodParams } from './protocol';
+import { ACTION_CLASS, actionResultSchemas, parseCommand, type BrowserCommand, type BrowserErrorCode, type MethodParams } from './protocol';
 
 export const MAX_IN_FLIGHT = 8;
 /** Longest a single command may run here, whatever deadline it carries (also keeps `setTimeout` in range). */
@@ -81,7 +81,9 @@ export class CommandRunner {
       const result = await this.deps.execute(command, controller.signal, context);
       if (controller.signal.aborted) throw controller.signal.reason;
       const checked = actionResultSchemas[command.action].safeParse(result);
-      if (!checked.success) throw new CommandError('internal');
+      // A result that cannot be reported (say, a page url over the limit) after an interaction does
+      // not undo it: the action may have run, so the agent must not simply repeat it.
+      if (!checked.success) throw new CommandError(ACTION_CLASS[command.action] === 'interact' || context.sideEffect ? 'outcome_unknown' : 'internal');
       await this.deps.result({ command_id: command.command_id, ok: true, result: checked.data as Record<string, unknown> }).catch(() => undefined);
     } catch (error) {
       await this.fail(command.command_id, this.codeFor(error, controller.signal, context), error);

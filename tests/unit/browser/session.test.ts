@@ -1,10 +1,11 @@
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { writeCredential } from '@/auth/credential-store';
 import type { BrowserApi } from '@/browser/chrome-api';
-import { BrowserSession, deviceKey, grantsKey } from '@/browser/session';
+import type { Grant } from '@/browser/protocol';
+import { BrowserSession, controlKey, deviceKey, grantsKey } from '@/browser/session';
 import type { BrowserRequest } from '@/protocol/messages';
 import { defaultSettings, saveSettings, type Profile, type Settings } from '@/shared/settings';
-import { AGENT_ID, DEVICE_ID, grant, GRANT_ID, NOW, ORIGIN } from './fixtures';
+import { AGENT_ID, DEVICE_ID, grant, GRANT_ID, NOW, ORIGIN, OTHER_AGENT_ID, payload } from './fixtures';
 import { FakeSocket, flush } from './fake-socket';
 
 const gw: Profile = { id: 'p_gw', name: 'Gateway', kind: 'gateway', origin: 'https://gw.example.test', remember: false };
@@ -243,7 +244,7 @@ describe('BrowserSession', () => {
     await t.connect();
     t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
     await flush();
-    const created = t.session.handleRequest({ type: 'browser.grant.create', agentIds: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read'], ttlSeconds: 3600 });
+    const created = t.session.handleRequest({ type: 'browser.grant.create', agentIds: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read', 'browser.control'], ttlSeconds: 3600 });
     await flush();
     t.socket().reply(t.socket().last('browser.grant.create'), { grant: grant() });
     await expect(created).resolves.toEqual({ ok: true });
@@ -258,7 +259,12 @@ describe('BrowserSession', () => {
     expect(restarted.session.state().grants.map((g) => g.grant_id)).toEqual([GRANT_ID]);
   });
 
-  it('refuses a created grant that does not match the request', async () => {
+  it.each<[string, Partial<Grant>]>([
+    ['more sites', { origins: [ORIGIN, 'https://bank.example.test'] }],
+    ['another agent', { agent_ids: [OTHER_AGENT_ID] }],
+    ['an extra agent', { agent_ids: [AGENT_ID, OTHER_AGENT_ID] }],
+    ['control where only reading was approved', { capabilities: ['browser.read', 'browser.control'] }],
+  ])('refuses and withdraws a created grant with %s than the person approved', async (_label, change) => {
     await enrolledHere([]);
     await saveSettings(settings(gw.id));
     const t = setup();
@@ -268,13 +274,71 @@ describe('BrowserSession', () => {
     await flush();
     const created = t.session.handleRequest({ type: 'browser.grant.create', agentIds: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read'], ttlSeconds: 3600 });
     await flush();
-    t.socket().reply(t.socket().last('browser.grant.create'), { grant: grant({ origins: [ORIGIN, 'https://bank.example.test'] }) });
+    t.socket().reply(t.socket().last('browser.grant.create'), { grant: grant({ capabilities: ['browser.read'], ...change }) });
     await expect(created).resolves.toEqual({ ok: false, code: 'invalid_response' });
     expect(t.session.state().grants).toEqual([]);
     expect((await fakeBrowser.storage.local.get(grantsKey(gw.id)))[grantsKey(gw.id)]).toEqual([]);
+    expect(t.socket().last('browser.grant.revoke').params).toEqual({ grant_id: GRANT_ID });
   });
 
-  it('explains a refused grant: a device revoked elsewhere is forgotten, a shared agent is not allowed', async () => {
+  it('accepts a created grant that is exactly what the person approved, in any order', async () => {
+    await enrolledHere([]);
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    const other = 'https://docs.example.test';
+    const created = t.session.handleRequest({ type: 'browser.grant.create', agentIds: [AGENT_ID, OTHER_AGENT_ID], origins: [ORIGIN, other], capabilities: ['browser.read'], ttlSeconds: 3600 });
+    await flush();
+    t.socket().reply(t.socket().last('browser.grant.create'), { grant: grant({ agent_ids: [OTHER_AGENT_ID, AGENT_ID], origins: [other, ORIGIN], capabilities: ['browser.read'] }) });
+    await expect(created).resolves.toEqual({ ok: true });
+    expect(t.session.state().grants.map((g) => g.grant_id)).toEqual([GRANT_ID]);
+    expect(t.socket().methods()).not.toContain('browser.grant.revoke');
+  });
+
+  it('sends no grant request before the socket finished attaching', async () => {
+    await enrolledHere([]);
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    // The attach is still unanswered.
+    const response = await t.session.handleRequest({ type: 'browser.grant.create', agentIds: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read'], ttlSeconds: 3600 });
+    expect(response).toEqual({ ok: false, code: 'device_offline' });
+    expect(t.socket().methods()).not.toContain('browser.grant.create');
+    expect(t.session.state().device).toMatchObject({ device_id: DEVICE_ID });
+  });
+
+  it('stops a running command when a refresh no longer lists its grant', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    let allow: (value: boolean) => void = () => undefined;
+    api.hasHostPermission = () => new Promise<boolean>((resolve) => (allow = resolve));
+    try {
+      await t.session.sync();
+      await t.connect();
+      t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+      await flush();
+      t.socket().event('browser.command', payload('open', { url: `${ORIGIN}/` }));
+      await flush();
+      expect(t.socket().methods()).toContain('browser.command.ack');
+
+      void t.session.handleRequest({ type: 'browser.grant.refresh' });
+      await flush();
+      t.socket().reply(t.socket().last('browser.grant.list'), { grants: [] });
+      await flush();
+      allow(true);
+      await flush();
+      expect(t.socket().last('browser.command.result').params).toMatchObject({ ok: false, error: { code: 'grant_revoked' } });
+    } finally {
+      api.hasHostPermission = async () => true;
+    }
+  });
+
+  it('explains a refused grant: a device revoked elsewhere is forgotten, an agent or key without the right is refused', async () => {
     await enrolledHere([]);
     await saveSettings(settings(gw.id));
     const t = setup();
@@ -287,7 +351,7 @@ describe('BrowserSession', () => {
     const shared = t.session.handleRequest(request());
     await flush();
     t.socket().refuse(t.socket().last('browser.grant.create'), 'UNAUTHORIZED');
-    await expect(shared).resolves.toEqual({ ok: false, code: 'agent_not_allowed' });
+    await expect(shared).resolves.toEqual({ ok: false, code: 'grant_unauthorized' });
     expect(t.session.state().device).toMatchObject({ device_id: DEVICE_ID });
 
     const revoked = t.session.handleRequest(request());
@@ -298,7 +362,7 @@ describe('BrowserSession', () => {
     expect(await fakeBrowser.storage.local.get(deviceKey(gw.id))).toEqual({});
   });
 
-  it('re-sends the control state after every attach, also when active', async () => {
+  it('sends no control state after attach when the person never chose one', async () => {
     await enrolledHere();
     await saveSettings(settings(gw.id));
     const t = setup();
@@ -306,7 +370,94 @@ describe('BrowserSession', () => {
     await t.connect();
     t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
     await flush();
-    expect(t.socket().last('browser.control.state').params).toEqual({ device_id: DEVICE_ID, state: 'active' });
+    expect(t.session.state().control).toBe('active');
+    expect(t.socket().methods()).not.toContain('browser.control.state');
+  });
+
+  it('keeps Pause across a Chrome restart and re-sends it after attach', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    const paused = t.session.handleRequest({ type: 'browser.control', state: 'paused' });
+    await flush();
+    expect(t.socket().last('browser.control.state').params).toEqual({ device_id: DEVICE_ID, state: 'paused' });
+    t.socket().reply(t.socket().last('browser.control.state'));
+    await expect(paused).resolves.toEqual({ ok: true });
+    expect((await fakeBrowser.storage.local.get(controlKey(gw.id)))[controlKey(gw.id)]).toEqual({ device_id: DEVICE_ID, state: 'paused' });
+
+    // Chrome restarts: storage.session is gone, storage.local is kept; the person signs in again.
+    await fakeBrowser.storage.session.clear();
+    await writeCredential(gw.id, { kind: 'api_key', apiKey: 'k1' }, false);
+    const restarted = setup();
+    await restarted.session.sync();
+    expect(restarted.session.state().control).toBe('paused');
+    await restarted.connect();
+    restarted.socket().reply(restarted.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    expect(restarted.socket().last('browser.control.state').params).toEqual({ device_id: DEVICE_ID, state: 'paused' });
+
+    // Resume is the person's choice too, and is re-sent from then on.
+    const resumed = restarted.session.handleRequest({ type: 'browser.control', state: 'active' });
+    await flush();
+    restarted.socket().reply(restarted.socket().last('browser.control.state'));
+    await expect(resumed).resolves.toEqual({ ok: true });
+    expect((await fakeBrowser.storage.local.get(controlKey(gw.id)))[controlKey(gw.id)]).toEqual({ device_id: DEVICE_ID, state: 'active' });
+  });
+
+  it('keeps Stop across a profile switch and back', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    const stopped = t.session.handleRequest({ type: 'browser.control', state: 'stopped' });
+    await flush();
+    t.socket().reply(t.socket().last('browser.control.state'));
+    await expect(stopped).resolves.toEqual({ ok: true });
+
+    await saveSettings(settings(gw2.id));
+    await t.session.sync();
+    expect(t.session.state().control).toBe('active');
+
+    await saveSettings(settings(gw.id));
+    await t.session.sync();
+    expect(t.session.state().control).toBe('stopped');
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    expect(t.socket().last('browser.control.state').params).toEqual({ device_id: DEVICE_ID, state: 'stopped' });
+  });
+
+  it('stays paused and sends nothing when the stored control state is damaged', async () => {
+    await enrolledHere();
+    await fakeBrowser.storage.local.set({ [controlKey(gw.id)]: { device_id: DEVICE_ID, state: 'running' } });
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    expect(t.session.state().control).toBe('paused');
+    expect(t.socket().methods()).not.toContain('browser.control.state');
+  });
+
+  it('ignores a stored control state of another device', async () => {
+    await enrolledHere();
+    await fakeBrowser.storage.local.set({ [controlKey(gw.id)]: { device_id: '99999999-9999-4999-8999-999999999999', state: 'paused' } });
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    expect(t.session.state().control).toBe('active');
+    expect(t.socket().methods()).not.toContain('browser.control.state');
   });
 
   it('refuses a device name with control characters before sending it', async () => {
