@@ -452,9 +452,9 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     }
     if (documentFocus !== null) return { frame: documentFocus };
     if (unread) return null;
-    // No tree shows focus. Chrome marks nothing focused in a tab that is not active (agent tabs open
-    // in the background), but it also shows nothing when focus is inside an out-of-process frame:
-    // such frames are missing from the frame tree and their trees cannot be read from here. The
+    // No tree shows focus. In a tab that is not active (agent tabs open in the background) Chrome
+    // does not mark the page itself focused, though a focused element is still marked. It also
+    // shows nothing when focus is inside an out-of-process frame: such frames are missing from the frame tree and their trees cannot be read from here. The
     // DOM (closed shadow roots included) lists every frame owner, so the key goes to the main
     // document only when each one holds a same-process, same-origin, granted document.
     if (!this.framesAllReadable(await this.document(tabId, frames.main), frames, origins)) {
