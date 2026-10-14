@@ -58,7 +58,8 @@
   --drum-rise-size: max(150vw, 540px);
   position: relative;
   isolation: isolate;
-  overflow: hidden;
+  /* Clip, not hidden: a hidden box is still scrolled by scrollIntoView, which would push the composer out of view. */
+  overflow: clip;
   display: flex;
   flex-direction: column;
   height: 100%;
