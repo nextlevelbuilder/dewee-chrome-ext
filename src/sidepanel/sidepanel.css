@@ -54,10 +54,28 @@
 
 /* ---------- Shell: header, transcript, composer; conversations open in a drawer ---------- */
 .shell {
+  /* Wider than the panel; only its top third shows, rising from the bottom edge behind the composer. */
+  --drum-rise-size: max(150vw, 540px);
+  position: relative;
+  isolation: isolate;
+  /* Clip, not hidden: a hidden box is still scrolled by scrollIntoView, which would push the composer out of view. */
+  overflow: clip;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-width: 0;
+}
+.shell::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: calc(100% - var(--drum-rise-size) / 3);
+  width: var(--drum-rise-size);
+  aspect-ratio: 1;
+  transform: translateX(-50%);
+  background: var(--drum-face) center / contain no-repeat;
+  pointer-events: none;
 }
 /* Groups the panel for `inert` without adding a layout box. */
 .shell-content {
@@ -69,10 +87,7 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3) var(--space-3);
   border-bottom: 1px solid var(--rule);
-  /* A quarter of the drum face behind the header actions, over the accent tint. */
-  background:
-    var(--drum-face) right -110px top -110px / 220px no-repeat,
-    linear-gradient(180deg, color-mix(in oklch, var(--accent) 7%, var(--paper)), var(--paper));
+  background: linear-gradient(180deg, color-mix(in oklch, var(--accent) 7%, var(--paper)), var(--paper));
 }
 .header-row {
   display: flex;
@@ -826,7 +841,8 @@
   gap: 6px;
   padding: var(--space-2) var(--space-3) 10px;
   border-top: 1px solid var(--rule);
-  background: var(--paper);
+  /* Clear, so the drum rising from the bottom edge shows around the input. */
+  background: transparent;
 }
 .composer-box {
   display: flex;
