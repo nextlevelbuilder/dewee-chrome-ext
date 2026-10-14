@@ -177,6 +177,29 @@ test('sends no key while focus is inside a cross-site frame', async ({ serviceWo
   await expect.poll(() => siteAttached(serviceWorker)).toBe(false);
 });
 
+test('sends no key while focus is inside a cross-site frame hidden in a closed shadow root', async ({ serviceWorker, openPanel, context }) => {
+  await connectAdvanced(serviceWorker, openPanel);
+  await openSite('/shadow-frame', 'E2E Shadow Frame');
+  const page = context.pages().find((p) => p.url().startsWith(siteOrigin));
+  await page!.bringToFront();
+  // Locators do not reach into a closed shadow root; the frame itself is still a Playwright frame.
+  await expect.poll(() => page!.frames().some((f) => f.url().includes('/foreign'))).toBe(true);
+  const foreignFrame = page!.frames().find((f) => f.url().includes('/foreign'))!;
+  await foreignFrame.getByRole('button', { name: 'Foreign button' }).focus();
+  const focusedInFrame = () => foreignFrame.evaluate(() => document.activeElement?.textContent ?? '');
+  await expect.poll(focusedInFrame).toBe('Foreign button');
+  // The page itself only sees the shadow host, which is neither a frame nor a sensitive field, so
+  // the check every build makes before a key lets this one through to the debugger engine.
+  expect(await page!.evaluate(() => document.activeElement?.tagName)).toBe('AD-SLOT');
+  // Tab needs no approval (Enter would wait for the person), and would move focus if it arrived.
+  const answer = await run('press', { tab: 't1', key: 'Tab' });
+  // The refusal comes from the debugger engine: only it gives this reason.
+  expect(answer).toMatchObject({ ok: false, error: { code: 'origin_not_granted', message: expect.stringContaining('focus may be inside a frame the grant does not cover') } });
+  expect(await foreignFrame.evaluate(() => document.body.dataset.keys ?? '')).toBe('');
+  expect(await focusedInFrame()).toBe('Foreign button');
+  await expect.poll(() => siteAttached(serviceWorker)).toBe(false);
+});
+
 test('reports outcome_unknown when input reached the page but the step after it failed', async ({ serviceWorker, openPanel, context }) => {
   test.setTimeout(90_000);
   await connectAdvanced(serviceWorker, openPanel);

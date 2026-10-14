@@ -375,7 +375,20 @@ export async function startPageServer(): Promise<{ port: number; stop(): Promise
   <iframe title="Other site" src="http://localhost:${port}/foreign" width="400" height="120"></iframe>
 </body></html>`;
   const inner = `<!doctype html><html lang="en"><body><button type="button" onclick="this.textContent = 'Inner clicked'">Inner button</button></body></html>`;
-  const foreign = `<!doctype html><html lang="en"><body><p>Foreign text e2e</p><button type="button">Foreign button</button></body></html>`;
+  // `/foreign` writes every key it receives to `data-keys` on its body, so a test can tell none arrived.
+  const foreign = `<!doctype html><html lang="en"><body onkeydown="this.dataset.keys = (this.dataset.keys || '') + event.key"><p>Foreign text e2e</p><button type="button">Foreign button</button></body></html>`;
+  // `/shadow-frame` hides the cross-site frame in a closed shadow root: the page's
+  // `document.activeElement` is then the host element, never the frame.
+  const shadowFrame = (port: number) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>E2E Shadow Frame</title></head>
+<body>
+  <h1>Widget</h1>
+  <ad-slot></ad-slot>
+  <script>
+    document.querySelector('ad-slot').attachShadow({ mode: 'closed' }).innerHTML =
+      '<iframe title="Hidden other site" src="http://localhost:${port}/foreign" width="400" height="120"></iframe>';
+  </script>
+</body></html>`;
   // `/slow` has a button whose mousedown handler keeps the page busy longer than one debugger
   // command may wait, so the input reaches the page but its outcome is never confirmed.
   const slow = `<!doctype html>
@@ -391,6 +404,7 @@ export async function startPageServer(): Promise<{ port: number; stop(): Promise
     if (req.url === '/frames') return void html(frames(port));
     if (req.url === '/inner') return void html(inner);
     if (req.url === '/foreign') return void html(foreign);
+    if (req.url === '/shadow-frame') return void html(shadowFrame(port));
     if (req.url === '/slow') return void html(slow);
     html(page);
   });

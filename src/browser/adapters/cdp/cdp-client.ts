@@ -70,6 +70,8 @@ export class CdpFailure extends Error {
     readonly beforeEffect: boolean,
     /** Chrome's own error text, kept for mapping only; never sent to the Gateway. */
     readonly detail = '',
+    /** A fixed explanation for the agent, written here (never page content or Chrome's text). */
+    readonly reason?: string,
   ) {
     super(code);
     this.name = 'CdpFailure';

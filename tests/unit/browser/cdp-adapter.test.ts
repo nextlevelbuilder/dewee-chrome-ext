@@ -1,4 +1,4 @@
-import { CdpAdapter, DISPATCH_GRACE_MS, MAX_REDACTIONS } from '@/browser/adapters/cdp/cdp-adapter';
+import { CdpAdapter, DISPATCH_GRACE_MS, FOCUS_MAY_BE_IN_FRAME, MAX_REDACTIONS } from '@/browser/adapters/cdp/cdp-adapter';
 import { CDP_METHODS, CdpClient, type DebuggerApi } from '@/browser/adapters/cdp/cdp-client';
 import type { AXNode, DomNode } from '@/browser/adapters/cdp/cdp-outline';
 import type { ImageCodec, Rect } from '@/browser/adapters/cdp/screenshot';
@@ -25,13 +25,40 @@ interface PageOptions {
   innerOutOfProcess?: boolean;
   /** Extra password fields in the main document. */
   passwords?: number;
+  /**
+   * Where the cross-site ad (node 9) sits: an `<iframe>` in the page (the default), an `<iframe>`
+   * inside a closed shadow root, an `<object>` or `<embed>`, or `'none'` for a page without one.
+   */
+  ad?: 'iframe' | 'shadow' | 'object' | 'embed' | 'none';
 }
 
-/** A small page as Chrome would describe it: the E2E shop with a same-origin frame and a cross-site ad frame. */
+/**
+ * A small page as Chrome would describe it: the E2E shop with a same-origin frame and a cross-site
+ * ad. Like real Chrome, the ad runs out of process: `Page.getFrameTree` leaves it out, its tree
+ * cannot be read here, and `DOM.getDocument` shows only its owner element, with a frame id and no
+ * content document.
+ */
 function page(options: PageOptions = {}) {
   const frames = { main: `${ORIGIN}/cart`, inner: `${ORIGIN}/frame`, ads: `${ADS}/banner` };
   const innerChildren = [el(21, 'BUTTON'), ...(options.secrets ? [el(22, 'INPUT', ['type', 'password', 'name', 'pin'])] : [])];
   const extraPasswords = Array.from({ length: options.passwords ?? 0 }, (_, i) => el(1000 + i, 'INPUT', ['type', 'password']));
+  const adPlacement = options.ad ?? 'iframe';
+  const adFrame = () => el(9, 'IFRAME', ['title', 'Ad'], { frameId: 'F3' });
+  const ad = (): DomNode[] => {
+    switch (adPlacement) {
+      case 'iframe':
+        return [adFrame()];
+      case 'shadow':
+        return [el(15, 'AD-SLOT', [], { shadowRoots: [{ nodeId: 16, backendNodeId: 16, nodeType: 11, nodeName: '#document-fragment', children: [adFrame()] }] })];
+      case 'object':
+        return [el(9, 'OBJECT', ['data', `${ADS}/banner`], { frameId: 'F3' })];
+      case 'embed':
+        // A plugin or a page Chrome has not given a frame yet: no frame id either.
+        return [el(9, 'EMBED', ['src', `${ADS}/banner`])];
+      case 'none':
+        return [];
+    }
+  };
   const dom = (): DomNode => ({
     nodeId: 1,
     backendNodeId: 1,
@@ -51,7 +78,7 @@ function page(options: PageOptions = {}) {
                 frameId: 'F2',
                 ...(options.innerOutOfProcess ? {} : { contentDocument: { nodeId: 20, backendNodeId: 20, nodeType: 9, nodeName: '#document', children: innerChildren } }),
               }),
-              el(9, 'IFRAME', ['title', 'Ad'], { frameId: 'F3' }),
+              ...ad(),
               ...(options.secrets ? [el(12, 'SECRET-BOX', [], { shadowRoots: [{ nodeId: 13, backendNodeId: 13, nodeType: 11, nodeName: '#document-fragment', children: [el(14, 'INPUT', ['type', 'password'])] }] })] : []),
               ...extraPasswords,
             ],
@@ -67,7 +94,7 @@ function page(options: PageOptions = {}) {
     ax('4', 'textbox', 'Password', 6, { value: { type: 'string', value: SECRET }, parentId: '1' }),
     ax('5', 'button', 'Next', 7, { parentId: '1' }),
     ax('6', 'Iframe', 'Coupons', 8, { parentId: '1' }),
-    ax('7', 'Iframe', 'Ad', 9, { parentId: '1' }),
+    ...(adPlacement === 'none' ? [] : [ax('7', adPlacement === 'iframe' || adPlacement === 'shadow' ? 'Iframe' : 'Embed', 'Ad', 9, { parentId: '1' })]),
     { nodeId: '8', ignored: true, parentId: '1', childIds: ['9'] },
     ax('9', 'StaticText', 'Free shipping', undefined, { parentId: '8' }),
     ...(options.secrets ? [ax('14', 'textbox', 'Secret', 14, { parentId: '1' })] : []),
@@ -81,8 +108,9 @@ function page(options: PageOptions = {}) {
 }
 
 /**
- * Where focus is: a backend node id, `'document'` (the main page itself), `'elsewhere'` (an
- * out-of-process frame no tree shows) or `'none'` (a background tab: Chrome marks nothing focused).
+ * Where focus is: a backend node id, `'document'` (the main page itself), `'elsewhere'` (inside the
+ * out-of-process ad, which no tree read here shows) or `'none'` (a background tab: Chrome marks
+ * nothing focused). The last two look the same from this session, as in real Chrome.
  */
 type Focus = number | 'document' | 'elsewhere' | 'none';
 
@@ -96,8 +124,6 @@ interface SetupOptions extends PageOptions {
   focusMovesTo?: (backend: number) => number;
   /** Fails (throws Chrome's error text) for a method, optionally only for some params. */
   failOn?: (method: string, params: Record<string, unknown>) => string | null;
-  /** The cross-site ad frame's tree can be read (it runs in the page's process). */
-  adsReadable?: boolean;
   /** Called on every command sent to Chrome, before it is answered. */
   onSend?: (method: string) => void;
   /** The visual viewport each `Page.getLayoutMetrics` call reports (the call count starts at 1). */
@@ -125,17 +151,15 @@ function setup(options: SetupOptions = {}) {
         return {
           frameTree: {
             frame: { id: 'F1', url: p.frames.main },
-            childFrames: [{ frame: { id: 'F2', url: p.frames.inner } }, { frame: { id: 'F3', url: p.frames.ads } }],
+            // The out-of-process ad frame is never listed here.
+            childFrames: [{ frame: { id: 'F2', url: p.frames.inner } }],
           },
         };
       case 'DOM.getDocument':
         return { root: p.dom() };
       case 'Accessibility.getFullAXTree':
         if (params.frameId === 'F2') return { nodes: withFocus(p.inner, 20) };
-        if (params.frameId === 'F3') {
-          if (options.adsReadable) return { nodes: [] };
-          throw new Error('Frame with the given id was not found.');
-        }
+        if (params.frameId !== undefined) throw new Error('Frame with the given id was not found.');
         return { nodes: withFocus(p.main, 1) };
       case 'Accessibility.getPartialAXTree': {
         const all = [...p.main, ...p.inner];
@@ -399,9 +423,10 @@ describe('CdpAdapter: click, type and press', () => {
   });
 
   it('sends no key when focus is in a frame it cannot read or that is not granted', async () => {
-    // Focus inside a cross-site (out-of-process) frame: no tree this session reads shows it.
+    // Focus inside a cross-site (out-of-process) frame: no tree this session reads shows it, and
+    // the frame tree does not list it; only its owner in the DOM gives it away.
     const oopif = setup({ focus: 'elsewhere' });
-    await expect(oopif.adapter.run(1, { op: 'press', origins, key: 'Backspace' })).resolves.toEqual({ ok: false, code: 'origin_not_granted' });
+    await expect(oopif.adapter.run(1, { op: 'press', origins, key: 'Backspace' })).resolves.toEqual({ ok: false, code: 'origin_not_granted', message: FOCUS_MAY_BE_IN_FRAME });
     expect(oopif.inputs()).toEqual([]);
 
     // Focus in a same-process frame that now shows a site outside the grant.
@@ -412,22 +437,43 @@ describe('CdpAdapter: click, type and press', () => {
 
     // Focus reported on the frame element itself.
     const owner = setup({ focus: 9 });
-    await expect(owner.adapter.run(1, { op: 'press', origins, key: 'Enter' })).resolves.toEqual({ ok: false, code: 'origin_not_granted' });
+    await expect(owner.adapter.run(1, { op: 'press', origins, key: 'Enter' })).resolves.toEqual({ ok: false, code: 'origin_not_granted', message: FOCUS_MAY_BE_IN_FRAME });
     expect(owner.inputs()).toEqual([]);
   });
 
-  it('sends keys to the main document when every frame was read and none shows focus (a background tab)', async () => {
-    const t = setup({ focus: 'none', adsReadable: true });
+  it('sends keys to the main document of a background tab when no tree shows focus and every frame on the page is read', async () => {
+    const t = setup({ focus: 'none', ad: 'none' });
     await expect(t.adapter.run(1, { op: 'press', origins, key: 'PageDown' })).resolves.toEqual({ ok: true, op: 'press' });
     expect(t.inputs().map((s) => s.params?.type)).toEqual(['rawKeyDown', 'keyUp']);
-    expect(t.sent.filter((s) => s.method === 'Accessibility.getFullAXTree').map((s) => s.params?.frameId)).toEqual([undefined, 'F2', 'F3']);
+    expect(t.sent.filter((s) => s.method === 'Accessibility.getFullAXTree').map((s) => s.params?.frameId)).toEqual([undefined, 'F2']);
     // Still only on a granted page.
     await expect(t.adapter.run(1, { op: 'press', origins: ['https://other.example.test'], key: 'PageDown' })).resolves.toEqual({ ok: false, code: 'origin_not_granted' });
+  });
 
-    // A frame that could not be read may hold focus: refused.
-    const unread = setup({ focus: 'none' });
-    await expect(unread.adapter.run(1, { op: 'press', origins, key: 'PageDown' })).resolves.toEqual({ ok: false, code: 'origin_not_granted' });
-    expect(unread.inputs()).toEqual([]);
+  it.each([
+    ['a cross-site iframe', 'iframe'],
+    ['a cross-site iframe inside a closed shadow root', 'shadow'],
+    ['a cross-site <object>', 'object'],
+    ['an <embed>', 'embed'],
+  ] as const)('sends no key to a background tab with %s, where focus may be unseen', async (_name, ad) => {
+    const t = setup({ focus: 'none', ad });
+    await expect(t.adapter.run(1, { op: 'press', origins, key: 'Enter' })).resolves.toEqual({ ok: false, code: 'origin_not_granted', message: FOCUS_MAY_BE_IN_FRAME });
+    expect(t.inputs()).toEqual([]);
+  });
+
+  it('sends no key when no tree shows focus and a same-site frame is out of process, or the cross-site one is granted', async () => {
+    const outOfProcess = setup({ focus: 'none', ad: 'none', innerOutOfProcess: true });
+    await expect(outOfProcess.adapter.run(1, { op: 'press', origins, key: 'Tab' })).resolves.toEqual({ ok: false, code: 'origin_not_granted', message: FOCUS_MAY_BE_IN_FRAME });
+    // Granting the ad's site does not make its document readable here.
+    const granted = setup({ focus: 'none' });
+    await expect(granted.adapter.run(1, { op: 'press', origins: [ORIGIN, ADS], key: 'Tab' })).resolves.toEqual({ ok: false, code: 'origin_not_granted', message: FOCUS_MAY_BE_IN_FRAME });
+    expect([...outOfProcess.inputs(), ...granted.inputs()]).toEqual([]);
+  });
+
+  it('sends no key when a listed frame could not be read', async () => {
+    const t = setup({ focus: 'none', ad: 'none', failOn: (method, params) => (method === 'Accessibility.getFullAXTree' && params.frameId === 'F2' ? 'Frame with the given id was not found.' : null) });
+    await expect(t.adapter.run(1, { op: 'press', origins, key: 'PageDown' })).resolves.toEqual({ ok: false, code: 'origin_not_granted', message: FOCUS_MAY_BE_IN_FRAME });
+    expect(t.inputs()).toEqual([]);
   });
 
   it('takes input on the tab for its own only while Input commands are sent, not during the reads around them', async () => {
@@ -492,6 +538,22 @@ describe('CdpAdapter: click, type and press', () => {
     expect(calls).toBeGreaterThan(0);
     expect(t.methods()).not.toContain('Input.dispatchMouseEvent');
     expect(t.debuggerApi.detach).toHaveBeenCalledWith({ tabId: 1 });
+  });
+
+  it('leaves the person’s input alone when an input step is refused before it reaches Chrome', async () => {
+    let refusal: DriverErrorCode | null = null;
+    const t = setup({ refuse: () => refusal });
+    await snapshot(t);
+    const original = t.debuggerApi.sendCommand;
+    t.debuggerApi.sendCommand = vi.fn(async (target, method, params) => {
+      const result = await original(target, method, params);
+      // The last read before the mouse: the next policy check is the input step's own.
+      if (method === 'DOM.getNodeForLocation') refusal = 'device_paused';
+      return result;
+    });
+    await expect(t.adapter.run(1, { op: 'click', origins, generation: 1, ref: 'e3' })).resolves.toEqual({ ok: false, code: 'device_paused' });
+    expect(t.inputs()).toEqual([]);
+    expect(t.adapter.isDispatching(1)).toBe(false);
   });
 
   it('marks a refusal between mouse press and release as a possible effect', async () => {
@@ -574,6 +636,13 @@ describe('CdpAdapter: screenshot', () => {
     await outOfProcess.adapter.run(1, { op: 'screenshot', origins });
     // Node 8 is the same-site frame.
     expect(outOfProcess.encoded[0]?.redact).toContainEqual({ x: 16, y: 316, width: 208, height: 28 });
+
+    // The same for a cross-site frame in a closed shadow root, an <object> and an <embed> (node 9).
+    for (const ad of ['shadow', 'object', 'embed'] as const) {
+      const t = setup({ ad });
+      await t.adapter.run(1, { op: 'screenshot', origins });
+      expect(t.encoded[0]?.redact).toContainEqual({ x: 16, y: 356, width: 208, height: 28 });
+    }
   });
 
   it('tries again when the page scrolled during the capture, then refuses rather than misplace the boxes', async () => {

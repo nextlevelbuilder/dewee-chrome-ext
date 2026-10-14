@@ -80,7 +80,7 @@ function ensure(result: GuardResult): asserts result is { ok: true; tab?: OwnedT
 }
 
 function pageError(response: DriverResponse): never {
-  throw new CommandError(response.ok ? 'internal' : response.code);
+  throw new CommandError(response.ok ? 'internal' : response.code, response.ok ? undefined : response.message);
 }
 
 type Described = Extract<DriverResponse, { op: 'describe' }>;

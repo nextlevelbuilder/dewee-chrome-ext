@@ -45,8 +45,9 @@ export type DriverResponse =
    * `effect: 'maybe'`: the failure came after input may already have reached the page (a click
    * pressed but not released, text inserted but not submitted). The executor then reports
    * `outcome_unknown` instead of the code, so the agent does not simply repeat the action.
+   * `message`: a fixed explanation written by the adapter (never page content or Chrome's text).
    */
-  | { ok: false; code: DriverErrorCode; effect?: 'maybe' };
+  | { ok: false; code: DriverErrorCode; effect?: 'maybe'; message?: string };
 
 export interface PageDriver {
   /** `signal` ends the work between steps once the command is cancelled or reaches its deadline. */

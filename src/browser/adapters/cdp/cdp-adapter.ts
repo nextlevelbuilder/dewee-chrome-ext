@@ -90,7 +90,22 @@ const KEYS: Record<PressKey, { key: string; code: string; keyCode: number; text?
   End: { key: 'End', code: 'End', keyCode: 35 },
 };
 
-const FRAME_TAGS = new Set(['IFRAME', 'FRAME', 'FENCEDFRAME', 'PORTAL']);
+/** Elements that may hold another document; `<object>`/`<embed>` can host a cross-site page too. */
+const OWNER_TAGS = new Set(['IFRAME', 'FRAME', 'FENCEDFRAME', 'PORTAL', 'OBJECT', 'EMBED']);
+const isFrameOwner = (info: DomInfo): boolean => OWNER_TAGS.has(info.tag) || info.childFrame !== undefined;
+
+/** The reason given when no tree shows focus and a frame on the page may hold it unseen. */
+export const FOCUS_MAY_BE_IN_FRAME =
+  'Keys were not sent: focus may be inside a frame the grant does not cover (cross-site or unreadable). Click a field in the granted page first.';
+
+/**
+ * The owner holds a document Chrome returned here (same process, so its nodes are indexed too),
+ * from a frame listed in the frame tree with the main page's origin, and that origin is granted.
+ */
+function ownsReadableFrame(info: DomInfo, frames: Frames, mainOrigin: string | null, origins: string[]): boolean {
+  const origin = info.childFrame === undefined ? null : (frames.origins.get(info.childFrame) ?? null);
+  return info.contentIndexed === true && origin !== null && origin === mainOrigin && origins.includes(origin);
+}
 
 const fail = (code: DriverErrorCode): DriverResponse => ({ ok: false, code });
 
@@ -179,7 +194,9 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
     } catch (error) {
       const code = error instanceof CdpFailure ? error.code : 'internal';
       // Once input went out, a failure does not mean nothing happened.
-      return state.effect ? { ok: false, code, effect: 'maybe' } : fail(code);
+      if (state.effect) return { ok: false, code, effect: 'maybe' };
+      const reason = error instanceof CdpFailure ? error.reason : undefined;
+      return reason ? { ok: false, code, message: reason } : fail(code);
     } finally {
       if (this.runs.get(tabId) === state) this.runs.delete(tabId);
     }
@@ -268,16 +285,19 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
    */
   private async dispatch(tabId: number, method: CdpMethod, params: Record<string, unknown>): Promise<unknown> {
     const state = this.runs.get(tabId);
-    this.dispatching.set(tabId, Number.POSITIVE_INFINITY);
+    let sent = false;
     try {
       return await this.deps.client.send(tabId, method, params, {
         signal: state?.signal,
         onDispatch: () => {
+          sent = true;
+          this.dispatching.set(tabId, Number.POSITIVE_INFINITY);
           if (state) state.effect = true;
         },
       });
     } finally {
-      this.dispatching.set(tabId, this.now() + DISPATCH_GRACE_MS);
+      // A step refused or cancelled before it reached Chrome leaves the person's input alone.
+      if (sent) this.dispatching.set(tabId, this.now() + DISPATCH_GRACE_MS);
     }
   }
 
@@ -406,10 +426,10 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
   /**
    * Where keyboard input would go now, from the `focused` state of the accessibility trees (they
    * see into shadow roots, open or closed): the focused node and its frame, a frame whose document
-   * itself has focus, the main document when every tree was read and none shows focus, or null
-   * when a frame could not be read (an out-of-process frame may hold focus).
+   * itself has focus, or the main document when no tree shows focus and no frame on the page could
+   * hold it unseen. Null when a listed frame could not be read.
    */
-  private async focus(tabId: number, frames: Frames): Promise<{ frame: string; node?: AXNode } | null> {
+  private async focus(tabId: number, origins: string[], frames: Frames): Promise<{ frame: string; node?: AXNode } | null> {
     const others = [...frames.origins.keys()].filter((id) => id !== frames.main);
     let documentFocus: string | null = null;
     let unread = others.length > MAX_FRAMES;
@@ -431,11 +451,25 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
       if (documentFocus === frames.main) return { frame: frames.main };
     }
     if (documentFocus !== null) return { frame: documentFocus };
-    // Chrome marks nothing focused in a tab or window that is not active (agent tabs open in the
-    // background). When every frame was read, no frame holds focus: keys go to the main document.
-    // When a frame could not be read, focus may be there, so the key is refused.
     if (unread) return null;
+    // No tree shows focus. Chrome marks nothing focused in a tab that is not active (agent tabs open
+    // in the background), but it also shows nothing when focus is inside an out-of-process frame:
+    // such frames are missing from the frame tree and their trees cannot be read from here. The
+    // DOM (closed shadow roots included) lists every frame owner, so the key goes to the main
+    // document only when each one holds a same-process, same-origin, granted document.
+    if (!this.framesAllReadable(await this.document(tabId, frames.main), frames, origins)) {
+      throw new CdpFailure('origin_not_granted', false, '', FOCUS_MAY_BE_IN_FRAME);
+    }
     return { frame: frames.main };
+  }
+
+  /** Every frame owner on the page holds a document this session reads, same-origin with the granted main page. */
+  private framesAllReadable(dom: Map<number, DomInfo>, frames: Frames, origins: string[]): boolean {
+    const mainOrigin = frames.origins.get(frames.main) ?? null;
+    for (const info of dom.values()) {
+      if (isFrameOwner(info) && !ownsReadableFrame(info, frames, mainOrigin, origins)) return false;
+    }
+    return true;
   }
 
   /**
@@ -445,15 +479,16 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
    */
   private async keyTarget(tabId: number, origins: string[], frames: Frames): Promise<number | undefined> {
     if (!origins.includes(frames.origins.get(frames.main) ?? '')) throw new CdpFailure('origin_not_granted', false);
-    const focus = await this.focus(tabId, frames);
-    if (!focus || !origins.includes(frames.origins.get(focus.frame) ?? '')) throw new CdpFailure('origin_not_granted', false);
+    const focus = await this.focus(tabId, origins, frames);
+    if (!focus) throw new CdpFailure('origin_not_granted', false, '', FOCUS_MAY_BE_IN_FRAME);
+    if (!origins.includes(frames.origins.get(focus.frame) ?? '')) throw new CdpFailure('origin_not_granted', false);
     if (!focus.node) return undefined;
     const backend = focus.node.backendDOMNodeId;
     const info = backend === undefined ? undefined : (await this.document(tabId, frames.main)).get(backend);
     // A focused node the DOM read cannot place is treated like a secret field.
     if (info === undefined || isSensitiveNode(info)) throw new CdpFailure('sensitive_field', false);
     // Focus on a frame element means keys go into a document no tree here showed.
-    if (FRAME_TAGS.has(info.tag) || info.childFrame !== undefined) throw new CdpFailure('origin_not_granted', false);
+    if (isFrameOwner(info)) throw new CdpFailure('origin_not_granted', false, '', FOCUS_MAY_BE_IN_FRAME);
     return backend;
   }
 
@@ -581,10 +616,8 @@ export class CdpAdapter<I extends DecodedImage = DecodedImage> implements PageDr
       const field = info.tag === 'INPUT' || info.tag === 'TEXTAREA' || info.tag === 'SELECT' || info.attrs.has('contenteditable');
       if (field && isSensitiveNode(info)) {
         targets.push(backend);
-      } else if (FRAME_TAGS.has(info.tag) || info.childFrame !== undefined) {
-        const origin = info.childFrame === undefined ? null : (frames.origins.get(info.childFrame) ?? null);
-        const readable = info.contentIndexed === true && origin !== null && origin === mainOrigin && origins.includes(origin);
-        if (!readable) targets.push(backend);
+      } else if (isFrameOwner(info) && !ownsReadableFrame(info, frames, mainOrigin, origins)) {
+        targets.push(backend);
       }
     }
     return targets;
