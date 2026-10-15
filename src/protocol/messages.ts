@@ -33,6 +33,8 @@ export const requestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('browser.grant.refresh') }),
   z.object({ type: z.literal('browser.control'), state: z.enum(['active', 'paused', 'stopped']) }),
   z.object({ type: z.literal('browser.approval'), id, approve: z.boolean() }),
+  /** Advanced build: the person's debugger choice for this device session. */
+  z.object({ type: z.literal('browser.advanced'), enabled: z.boolean(), fallback: z.boolean() }).strict(),
 ]);
 export type BackgroundRequest = z.infer<typeof requestSchema>;
 export type BrowserRequest = Extract<BackgroundRequest, { type: `browser.${string}` }>;

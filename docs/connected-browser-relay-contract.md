@@ -60,7 +60,7 @@ All params are strict objects; unknown fields are rejected.
 | Method | Params | Result |
 |---|---|---|
 | `browser.device.enroll` | `{name, platform, capabilities:["standard"] \| ["standard","advanced"]}` | `{device_id}` (server-generated, random) |
-| `browser.device.attach` | `{device_id, capabilities}` | `{device_id, grants:[Grant]}`. Binds this socket as the device's live connection. Refused (`NOT_FOUND`) unless the device belongs to the authenticated principal and tenant and is not revoked. A newer attach replaces an older socket. |
+| `browser.device.attach` | `{device_id, capabilities}` | `{device_id, grants:[Grant]}`. Binds this socket as the device's live connection. The extension enrolls with what its build can do and sends on every attach what is usable now (`advanced` only while the person has Advanced mode on); it re-attaches on the same socket when that changes. Refused (`NOT_FOUND`) unless the device belongs to the authenticated principal and tenant and is not revoked. A newer attach replaces an older socket. |
 | `browser.device.heartbeat` | `{device_id}` | `{}` |
 | `browser.device.list` | `{}` | `{devices:[Device]}` (the principal's devices in this tenant) |
 | `browser.device.rename` | `{device_id, name}` | `{device}` |

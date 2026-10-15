@@ -38,12 +38,25 @@ The unpacked extension id is pinned by the public key in `extension-public-key.j
 
 ```bash
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
-pnpm test:e2e     # builds, then Playwright loads .output/chrome-mv3
+pnpm build:advanced  # Advanced profile into .output-advanced/chrome-mv3
+pnpm test:e2e     # builds both profiles into .output-e2e*/, then Playwright loads them
 pnpm zip          # .output/dewee-chrome-ext-<version>-chrome.zip (keeps the pinned key, for sideloading)
-pnpm zip:store    # .output-store/… without `key`, for the Chrome Web Store
+pnpm zip:advanced # .output-advanced/… Advanced sideload zip (keeps the pinned key)
+pnpm zip:store    # .output-store/… without `key`, for the Chrome Web Store (Standard only)
 ```
 
 The Chrome Web Store rejects a manifest that carries `key` and assigns its own extension ID. Register that store ID's `chromiumapp.org` redirect URI and `chrome-extension://` origin next to the unpacked ones.
+
+### Build profiles
+
+`DEWEE_PROFILE` picks the profile at build time (`src/shared/build-profile.ts`): `standard` (default) or `advanced`. Advanced adds the `debugger` permission, names the extension "Dewee (Advanced)" and compiles in the CDP adapter (`src/browser/adapters/cdp/`); Standard bundles leave it out (`__DEWEE_ADVANCED__` is `false`, so the bundler drops it). Unit tests run as Standard. Both profiles share the pinned sideload key, so they have the same extension ID and only one of them can be installed in a Chrome profile at a time; remove one before loading the other. Advanced has no Chrome Web Store listing yet: `DEWEE_STORE=1` with the Advanced profile fails the build on purpose.
+
+Chrome Web Store review notes for a future Advanced listing (`debugger` is a sensitive permission and needs a justification and in-depth review):
+
+- Single purpose: the connected browser drives only tabs the agent opened, on sites the person allowed, after the person turned on Advanced mode in the side panel; Chrome's debugging bar shows while attached.
+- Justification: the accessibility tree gives agents a more faithful page outline than DOM heuristics, `Input.dispatch*` produces the input sites expect, and `Page.captureScreenshot` gives the agent a viewport image; none of this is possible with `scripting` alone.
+- Limits to state: fixed CDP method whitelist (no `Runtime.evaluate`, network, storage or cookies), tab targets only, attached only during a command, nothing stored.
+- Policies: [Use of permissions](https://developer.chrome.com/docs/webstore/program-policies/permissions), [Privacy fields and permission justification](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy), [Limited use of user data](https://developer.chrome.com/docs/webstore/program-policies/limited-use), [`chrome.debugger`](https://developer.chrome.com/docs/extensions/reference/api/debugger).
 
 ### Connected browser end-to-end
 
@@ -54,6 +67,14 @@ pnpm test:e2e -- tests/e2e/browser-control.spec.ts
 ```
 
 Both servers close in `afterEach`. The relay's API key is a fixed test value, not a secret.
+
+`tests/e2e/browser-control-advanced.spec.ts` runs the same setup on the Advanced build (`test.use({ buildProfile: 'advanced' })` in `tests/e2e/fixtures.ts`): the opt-in, AX snapshot redaction, click and type, the JPEG screenshot, same-site and cross-site frames, attach and detach as Chrome reports them, revoke and opt-in off mid-action, and a debugger conflict. The conflict is simulated by attaching `chrome.debugger` to the agent tab from the service worker first; Chrome allows one client per extension per tab, so the adapter's attach fails as it does when DevTools holds the tab (real DevTools cannot be opened from Playwright).
+
+```bash
+pnpm build:e2e:advanced
+pnpm exec playwright test tests/e2e/browser-control-advanced.spec.ts
+pnpm bench:browser   # Standard vs Advanced snapshot/click latency (DEWEE_BENCH_ROUNDS, default 20)
+```
 
 ### Live end-to-end
 

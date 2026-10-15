@@ -475,6 +475,49 @@
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
+.browser-activity-scope {
+  margin: 0;
+}
+.browser-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+.browser-check input {
+  margin-top: 3px;
+  flex: none;
+}
+/* The same "AI" mark the toolbar icon shows on a tab an agent controls. */
+.browser-tab-marker {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--radius-1, 4px);
+  background: var(--accent);
+  color: var(--paper);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.browser-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+}
+.browser-timeline-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 2px 0 2px var(--space-2);
+  border-left: 2px solid var(--rule);
+}
+.browser-timeline-item.failed {
+  border-left-color: color-mix(in oklch, var(--danger, #c0392b) 60%, var(--rule));
+}
 
 /* ---------- Transcript ---------- */
 .chat-main {

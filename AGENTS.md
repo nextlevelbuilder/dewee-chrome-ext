@@ -18,6 +18,7 @@ pnpm typecheck
 pnpm test           # unit + integration (Vitest)
 pnpm test:e2e       # builds, then runs Playwright against the unpacked build
 pnpm build          # .output/chrome-mv3
+pnpm build:advanced # .output-advanced/chrome-mv3, adds the `debugger` permission (zip with `pnpm zip:advanced`)
 pnpm zip            # sideload zip (keeps the pinned extension key)
 pnpm zip:store      # Chrome Web Store zip (manifest without `key`)
 ```
@@ -54,6 +55,7 @@ Rules:
 - The side panel never reads the active page or the person's other tabs. There are two opt-in exceptions, both off by default:
   - The "Ask Dewee" page script sends the text the person selected (never form fields) when they click its button, and only as an editable draft.
   - "Connected browser" (self-hosted only) lets an agent read and act only in tabs it opened itself, only on exact origins the person allowed for that agent in the panel, only until the grant expires or is revoked, and only after the person granted Chrome host permission for those origins. Password, hidden, payment and one-time-code values are never read or typed, page content is never stored, and Pause/Stop/Revoke work locally. See [docs/browser-control-threat-model.md](docs/browser-control-threat-model.md).
+- The `debugger` permission exists only in the Advanced build profile. Its adapter attaches only to agent-owned tabs, only while a command runs and the person has Advanced mode on, and calls only the fixed CDP method list in `src/browser/adapters/cdp/cdp-client.ts`. Never add `Runtime.evaluate`, `Network`, `Storage`, cookie or `Target` methods, a browser-level target, a remote debugging port, or a CDP method or params taken from a command. Screenshots are viewport-only, never stored, and never fall back to another path.
 
 ## Code layout
 

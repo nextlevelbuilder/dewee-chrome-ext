@@ -1,13 +1,15 @@
 /**
  * The Chrome calls the executor makes, behind one small interface so the executor can be tested
- * without a browser. Only `chrome.tabs`, `chrome.scripting` (with the bundled `pageRun`) and
- * `permissions.getAll` are used: no `tabs` permission (URL and title are visible for origins
- * the person granted), no `debugger`, no code strings.
+ * without a browser. The Standard page adapter lives here: `chrome.tabs`, `chrome.scripting` (with
+ * the bundled `pageRun`) and `permissions.getAll`. No `tabs` permission (URL and title are visible
+ * for origins the person granted), no code strings. The Advanced adapter (`adapters/cdp/`) is
+ * routed in front of `run` by `engine-router.ts` when the person turned the debugger on.
  */
 import { browser } from 'wxt/browser';
 import { lockLocalStorage } from '@/background/ask-selection';
 import { patternCoversExactHost } from '@/shared/origin';
-import { pageRun, type PageRequest, type PageResponse } from './snapshot';
+import type { DriverRequest, DriverResponse, PageDriver } from './adapters/page-driver';
+import { pageRun, type PageResponse } from './snapshot';
 
 export interface TabInfo {
   url?: string;
@@ -16,14 +18,35 @@ export interface TabInfo {
   active: boolean;
 }
 
-export interface BrowserApi {
+export interface BrowserApi extends PageDriver {
   createTab(url: string): Promise<number>;
   updateTab(tabId: number, url: string): Promise<void>;
   removeTab(tabId: number): Promise<void>;
   /** null when the tab no longer exists. */
   getTab(tabId: number): Promise<TabInfo | null>;
-  run(tabId: number, request: PageRequest): Promise<PageResponse>;
+  run(tabId: number, request: DriverRequest, signal?: AbortSignal): Promise<DriverResponse>;
   hasHostPermission(origin: string): Promise<boolean>;
+}
+
+/** Page operations that send input to the page. */
+const INPUT_OPS: ReadonlySet<DriverRequest['op']> = new Set(['click', 'type', 'press']);
+
+/** Runs one request through the bundled page script (the Standard adapter). */
+export async function runPageScript(tabId: number, request: DriverRequest): Promise<DriverResponse> {
+  // Screenshots need the debugger (Advanced adapter); the page script cannot take one.
+  if (request.op === 'screenshot') return { ok: false, code: 'unsupported_capability' };
+  // The page function runs in a content-script world: `storage.local` must be closed to it first.
+  if (!(await lockLocalStorage())) return { ok: false, code: 'internal' };
+  // For input, a lost answer does not mean nothing happened: the script may have run before the
+  // tab navigated or closed.
+  const unknown = INPUT_OPS.has(request.op) ? ({ effect: 'maybe' } as const) : {};
+  try {
+    const [frame] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, func: pageRun, args: [request] });
+    return (frame?.result as PageResponse | undefined) ?? { ok: false, code: 'internal', ...unknown };
+  } catch {
+    // Chrome refuses injection into pages without host access (or restricted pages), or the tab went away.
+    return { ok: false, code: 'origin_not_granted', ...unknown };
+  }
 }
 
 export const chromeBrowserApi: BrowserApi = {
@@ -46,17 +69,7 @@ export const chromeBrowserApi: BrowserApi = {
       return null;
     }
   },
-  async run(tabId, request) {
-    // The page function runs in a content-script world: `storage.local` must be closed to it first.
-    if (!(await lockLocalStorage())) return { ok: false, code: 'internal' };
-    try {
-      const [frame] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, func: pageRun, args: [request] });
-      return (frame?.result as PageResponse | undefined) ?? { ok: false, code: 'internal' };
-    } catch {
-      // Chrome refuses injection into pages without host access (or restricted pages), or the tab went away.
-      return { ok: false, code: 'origin_not_granted' };
-    }
-  },
+  run: runPageScript,
   async hasHostPermission(origin) {
     try {
       // Not `permissions.contains`: a broad grant held for another feature (Ask Dewee's `https://*/*`)

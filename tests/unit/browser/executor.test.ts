@@ -2,9 +2,12 @@ import { ApprovalBroker } from '@/browser/approvals';
 import type { BrowserApi, TabInfo } from '@/browser/chrome-api';
 import { Executor, type ExecutionContext } from '@/browser/executor';
 import { LocalGuard, type ControlState } from '@/browser/policy';
+import type { DriverRequest, DriverResponse } from '@/browser/adapters/page-driver';
 import type { BrowserCommand, Grant } from '@/browser/protocol';
-import type { PageRequest, PageResponse } from '@/browser/snapshot';
 import { TabRegistry } from '@/browser/tabs';
+
+type PageRequest = DriverRequest;
+type PageResponse = DriverResponse;
 import { AGENT_ID, command, grant, GRANT_ID, NOW, ORIGIN } from './fixtures';
 import { flush } from './fake-socket';
 
@@ -19,11 +22,12 @@ function pendingId(approvals: ApprovalBroker): string {
   return first.id;
 }
 
-function setup(options: { grant?: Grant; page?: (request: PageRequest) => PageResponse; redirect?: string } = {}) {
+function setup(options: { grant?: Grant; page?: (request: DriverRequest) => DriverResponse; redirect?: string; screenshots?: boolean } = {}) {
   const browserTabs = new Map<number, FakeTab>();
   let nextTabId = 100;
-  const pageCalls: PageRequest[] = [];
-  const api: BrowserApi = {
+  const pageCalls: DriverRequest[] = [];
+  const api: BrowserApi & { release: ReturnType<typeof vi.fn> } = {
+    release: vi.fn(async () => undefined),
     createTab: vi.fn(async (url: string) => {
       const id = nextTabId++;
       browserTabs.set(id, { id, url: options.redirect ?? url, title: 'Shop', status: 'complete', active: false });
@@ -40,14 +44,15 @@ function setup(options: { grant?: Grant; page?: (request: PageRequest) => PageRe
       const tab = browserTabs.get(tabId);
       return tab ? { ...tab } : null;
     },
-    run: vi.fn(async (_tabId: number, request: PageRequest) => {
+    run: vi.fn(async (_tabId: number, request: DriverRequest): Promise<DriverResponse> => {
       pageCalls.push(request);
       if (options.page) return options.page(request);
       if (request.op === 'describe') return { ok: true, op: 'describe', role: 'button', name: 'Next', sensitive: false, editable: false } as const;
       if (request.op === 'focused') return { ok: true, op: 'describe', role: 'textbox', name: 'Message', sensitive: false, editable: true } as const;
       if (request.op === 'snapshot') return { ok: true, op: 'snapshot', text: '[e1] button "Next"', url: `${ORIGIN}/`, title: 'Shop' } as const;
       if (request.op === 'findText') return { ok: true, op: 'findText', found: true } as const;
-      return { ok: true, op: request.op } as PageResponse;
+      if (request.op === 'screenshot') return { ok: true, op: 'screenshot', data: '/9j/AAAA' } as const;
+      return { ok: true, op: request.op } as DriverResponse;
     }),
     hasHostPermission: vi.fn(async (origin: string) => origin === ORIGIN),
   };
@@ -71,6 +76,7 @@ function setup(options: { grant?: Grant; page?: (request: PageRequest) => PageRe
     approvals,
     grant: (id) => (current?.grant_id === id ? current : undefined),
     control: () => control,
+    screenshots: () => options.screenshots ?? false,
     onActivity: (activity, running) => activities.push(`${running ? 'start' : 'end'}:${activity.action}`),
     onTabsChanged: () => undefined,
     now: () => NOW,
@@ -123,7 +129,7 @@ describe('Executor: open', () => {
     await expect(promise).resolves.toEqual({ tab: 't1', url: `${ORIGIN}/products`, title: 'Shop' });
     expect(context.sideEffect).toBe(true);
     expect(t.tabs.get('t1')).toMatchObject({ tabId: 100, grantId: GRANT_ID });
-    expect(t.activities).toEqual(['start:open', 'start:open', 'end:open']);
+    expect(t.activities).toEqual(['start:open', 'start:open', 'start:open', 'end:open']);
   });
 
   it('refuses a site outside the grant without opening anything', async () => {
@@ -165,10 +171,38 @@ describe('Executor: local policy', () => {
     await expect(t.run(command('navigate', { tab: 't1', url: `${ORIGIN}/` })).promise).rejects.toMatchObject({ code: 'origin_not_granted' });
   });
 
-  it('refuses screenshots', async () => {
+  it('refuses screenshots unless the debugger is on', async () => {
     const t = setup();
     t.ownTab();
     await expect(t.run(command('screenshot', { tab: 't1' })).promise).rejects.toMatchObject({ code: 'unsupported_capability' });
+    expect(opsOf(t.pageCalls)).toEqual([]);
+  });
+
+  it('takes a screenshot of a granted page and lets go of the tab after', async () => {
+    const t = setup({ screenshots: true });
+    t.ownTab();
+    await expect(t.run(command('screenshot', { tab: 't1' })).promise).resolves.toEqual({ tab: 't1', url: `${ORIGIN}/cart`, mime: 'image/jpeg', data_base64: '/9j/AAAA' });
+    expect(t.api.release).toHaveBeenCalledWith(7);
+  });
+
+  it('refuses a screenshot of a page that left the grant, before taking it', async () => {
+    const t = setup({ screenshots: true });
+    t.ownTab('https://elsewhere.example.test/');
+    await expect(t.run(command('screenshot', { tab: 't1' })).promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+    expect(opsOf(t.pageCalls)).toEqual([]);
+  });
+
+  it('passes on the adapter refusing a screenshot (debugger busy)', async () => {
+    const t = setup({ screenshots: true, page: () => ({ ok: false, code: 'debugger_unavailable' }) });
+    t.ownTab();
+    await expect(t.run(command('screenshot', { tab: 't1' })).promise).rejects.toMatchObject({ code: 'debugger_unavailable' });
+    expect(t.api.release).toHaveBeenCalledWith(7);
+  });
+
+  it('refuses a screenshot above the Gateway limit', async () => {
+    const t = setup({ screenshots: true, page: () => ({ ok: true, op: 'screenshot', data: 'A'.repeat(1536 * 1024 * 2) }) });
+    t.ownTab();
+    await expect(t.run(command('screenshot', { tab: 't1' })).promise).rejects.toMatchObject({ code: 'internal' });
   });
 
   it('allows one command per tab at a time', async () => {
@@ -202,7 +236,22 @@ describe('Executor: click and type', () => {
     const t = setup();
     t.ownTab();
     await expect(t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 })).promise).resolves.toEqual({ tab: 't1', url: `${ORIGIN}/cart`, title: 'Cart' });
-    expect(opsOf(t.pageCalls)).toEqual(['watch', 'describe', 'click']);
+    expect(opsOf(t.pageCalls)).toEqual(['watch', 'describe', 'highlight', 'click']);
+    expect(t.api.release).toHaveBeenCalledWith(7);
+  });
+
+  it('still clicks when the highlight cannot be shown', async () => {
+    const t = setup({
+      page: (request) =>
+        request.op === 'highlight'
+          ? { ok: false, code: 'internal' }
+          : request.op === 'describe'
+            ? { ok: true, op: 'describe', role: 'button', name: 'Next', sensitive: false, editable: false }
+            : ({ ok: true, op: request.op } as PageResponse),
+    });
+    t.ownTab();
+    await expect(t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 })).promise).resolves.toMatchObject({ tab: 't1' });
+    expect(opsOf(t.pageCalls)).toEqual(['watch', 'describe', 'highlight', 'click']);
   });
 
   it('denies a high-risk click when no side panel is open', async () => {
@@ -267,6 +316,27 @@ describe('Executor: click and type', () => {
     await expect(t.run(command('type', { tab: 't1', ref: 'e2', generation: 1, text: 'shoes' })).promise).resolves.toMatchObject({ tab: 't1' });
   });
 
+  it('reports outcome_unknown when the adapter failed after input may have reached the page', async () => {
+    for (const action of ['click', 'type', 'press'] as const) {
+      const t = setup({
+        page: (request) => {
+          if (request.op === action) return { ok: false, code: 'debugger_unavailable', effect: 'maybe' };
+          if (request.op === 'describe' || request.op === 'focused') return { ok: true, op: 'describe', role: 'textbox', name: 'Search', sensitive: false, editable: true };
+          return { ok: true, op: request.op } as PageResponse;
+        },
+      });
+      t.ownTab();
+      const params = action === 'press' ? { tab: 't1', key: 'Tab' as const } : action === 'type' ? { tab: 't1', ref: 'e1', generation: 1, text: 'shoes' } : { tab: 't1', ref: 'e1', generation: 1 };
+      await expect(t.run(command(action, params)).promise).rejects.toMatchObject({ code: 'outcome_unknown' });
+    }
+  });
+
+  it('keeps the specific code when the adapter refused before any input', async () => {
+    const t = setup({ page: (request) => (request.op === 'click' ? { ok: false, code: 'origin_not_granted' } : request.op === 'describe' ? { ok: true, op: 'describe', role: 'button', name: 'Next', sensitive: false, editable: false } : ({ ok: true, op: request.op } as PageResponse)) });
+    t.ownTab();
+    await expect(t.run(command('click', { tab: 't1', ref: 'e1', generation: 1 })).promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+  });
+
   it('marks a side effect only once the page action starts', async () => {
     const t = setup();
     t.ownTab();
@@ -305,7 +375,24 @@ describe('Executor: approvals', () => {
     const t = setup();
     t.ownTab();
     await expect(t.run(command('press', { tab: 't1', key: 'Tab' })).promise).resolves.toEqual({ tab: 't1' });
-    expect(opsOf(t.pageCalls)).toEqual(['watch', 'press']);
+    expect(opsOf(t.pageCalls)).toEqual(['watch', 'focused', 'press']);
+  });
+
+  it('sends no key at all to a password field', async () => {
+    const t = setup({ page: describing(() => ({ role: 'textbox', name: 'Password', sensitive: true, editable: true })) });
+    t.ownTab();
+    await expect(t.run(command('press', { tab: 't1', key: 'Backspace' })).promise).rejects.toMatchObject({ code: 'sensitive_field' });
+    await expect(t.run(command('press', { tab: 't1', key: 'Tab' })).promise).rejects.toMatchObject({ code: 'sensitive_field' });
+    expect(opsOf(t.pageCalls)).not.toContain('press');
+  });
+
+  it('sends no key when focus is in a frame the grant does not cover', async () => {
+    const t = setup({ page: (request) => (request.op === 'focused' ? { ok: false, code: 'origin_not_granted' } : ({ ok: true, op: request.op } as PageResponse)) });
+    t.ownTab();
+    const run = t.run(command('press', { tab: 't1', key: 'ArrowDown' }));
+    await expect(run.promise).rejects.toMatchObject({ code: 'origin_not_granted' });
+    expect(run.context.sideEffect).toBe(false);
+    expect(opsOf(t.pageCalls)).not.toContain('press');
   });
 
   it('refuses Enter when focus moved while the person decided', async () => {

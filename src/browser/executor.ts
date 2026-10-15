@@ -1,14 +1,15 @@
 /**
- * Runs one validated command: local policy first, then the semantic action with `chrome.tabs` or
- * the bundled page runtime. Checks run again right before every side effect (the grant can be
- * revoked, Pause pressed or the tab navigated while a step was waiting). Results carry only what
- * the contract returns; page text, typed text and DOM are never logged or stored.
+ * Runs one validated command: local policy first, then the semantic action with `chrome.tabs` and a
+ * page adapter (the bundled page runtime, or the debugger in the Advanced build; see
+ * engine-router.ts). Checks run again right before every side effect (the grant can be revoked,
+ * Pause pressed or the tab navigated while a step was waiting). Results carry only what the
+ * contract returns; page text, typed text, screenshots and DOM are never logged or stored.
  */
+import { MAX_SCREENSHOT_BYTES, type DriverRequest, type DriverResponse } from './adapters/page-driver';
 import { approvalPreview, type ApprovalBroker, type ApprovalRequest } from './approvals';
 import type { BrowserApi } from './chrome-api';
 import { isHighRiskName, isRestrictedUrl, LocalGuard, urlOrigin, type ControlState, type GuardResult } from './policy';
 import { SNAPSHOT_DEFAULT_CHARS, type ActionResult, type BrowserCommand, type BrowserErrorCode, type Grant } from './protocol';
-import type { PageRequest, PageResponse } from './snapshot';
 import type { OwnedTab, TabRegistry } from './tabs';
 
 export class CommandError extends Error {
@@ -28,10 +29,13 @@ export interface ExecutionContext {
 
 export interface Activity {
   commandId: string;
+  grantId: string;
   agentName: string;
   channel: string;
   domain: string;
   action: string;
+  /** The owned tab's handle, once known. */
+  tab?: string;
 }
 
 export interface ExecutorDeps {
@@ -41,6 +45,8 @@ export interface ExecutorDeps {
   approvals: ApprovalBroker;
   grant(grantId: string): Grant | undefined;
   control(): ControlState;
+  /** Screenshots can be taken (Advanced build, debugger turned on). */
+  screenshots?(): boolean;
   onActivity(activity: Activity, running: boolean): void;
   onTabsChanged(): void;
   now?(): number;
@@ -51,6 +57,8 @@ const LOAD_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
 const SETTLE_MS = 300;
 const WAIT_TEXT_MS = 10_000;
+/** How long the target stays outlined before a click, so the person can see it. */
+const HIGHLIGHT_MS = 250;
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -71,11 +79,11 @@ function ensure(result: GuardResult): asserts result is { ok: true; tab?: OwnedT
   if (!result.ok) throw new CommandError(result.code, result.message);
 }
 
-function pageError(response: PageResponse): never {
-  throw new CommandError(response.ok ? 'internal' : response.code === 'internal' ? 'internal' : response.code);
+function pageError(response: DriverResponse): never {
+  throw new CommandError(response.ok ? 'internal' : response.code, response.ok ? undefined : response.message);
 }
 
-type Described = Extract<PageResponse, { op: 'describe' }>;
+type Described = Extract<DriverResponse, { op: 'describe' }>;
 
 /** The element still looks the way it did when the person was asked. */
 function sameTarget(before: Described, after: Described): boolean {
@@ -101,7 +109,7 @@ export class Executor {
 
   async execute(command: BrowserCommand, signal: AbortSignal, context: ExecutionContext): Promise<ActionResult[BrowserCommand['action']]> {
     const grant = this.recheck(command, signal);
-    const activity: Activity = { commandId: command.command_id, agentName: command.agent_name ?? '', channel: command.channel ?? '', domain: '', action: command.action };
+    const activity: Activity = { commandId: command.command_id, grantId: command.grant_id, agentName: command.agent_name ?? '', channel: command.channel ?? '', domain: '', action: command.action };
     this.deps.onActivity(activity, true);
     try {
       return await this.dispatch(command, grant, signal, context, activity);
@@ -114,7 +122,7 @@ export class Executor {
   private recheck(command: BrowserCommand, signal: AbortSignal): Grant {
     if (signal.aborted) throw new CommandError('cancelled');
     const grant = this.deps.grant(command.grant_id);
-    ensure(this.deps.guard.checkGrant(command, grant, this.deps.control()));
+    ensure(this.deps.guard.checkGrant(command, grant, this.deps.control(), this.deps.screenshots?.() ?? false));
     return grant as Grant;
   }
 
@@ -138,6 +146,8 @@ export class Executor {
         throw new CommandError('cancelled');
       }
       const owned = tabs.add(tabId, grant.grant_id, command.agent_id);
+      activity.tab = owned.handle;
+      this.deps.onActivity(activity, true);
       this.deps.onTabsChanged();
       await this.waitForLoad(tabId, signal, this.remaining(command, LOAD_TIMEOUT_MS));
       const info = await this.tabInfo(tabId);
@@ -162,9 +172,12 @@ export class Executor {
     if (!tabs.lease(handle)) throw new CommandError('busy', 'Another command is using this tab');
     try {
       activity.domain = hostOf((await this.deps.api.getTab(tab.tabId))?.url);
+      activity.tab = handle;
       this.deps.onActivity(activity, true);
       return await this.onTab(command, grant, tab, signal, context);
     } finally {
+      // The debugger (Advanced) is held only while a command runs on the tab.
+      await Promise.resolve(this.deps.api.release?.(tab.tabId)).catch(() => undefined);
       tabs.release(handle);
     }
   }
@@ -185,12 +198,12 @@ export class Executor {
       }
       case 'snapshot': {
         const maxChars = command.params.max_chars ?? SNAPSHOT_DEFAULT_CHARS;
-        let response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars });
+        let response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars }, signal);
         if (!response.ok && response.code === 'stale_ref') {
           // The page changed a lot since the last snapshot: start a new generation and read it again.
           tabs.bump(tab.tabId);
           this.deps.onTabsChanged();
-          response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars });
+          response = await api.run(tab.tabId, { op: 'snapshot', origins, generation: tab.generation, maxChars }, signal);
         }
         if (!response.ok || response.op !== 'snapshot') pageError(response);
         ensure(await guard.checkUrl(response.url, grant));
@@ -201,7 +214,7 @@ export class Executor {
         const { ref, generation } = command.params;
         if (generation !== tab.generation) throw new CommandError('stale_ref', 'The page changed since that snapshot');
         await this.watch(tab.tabId, grant);
-        const described = await this.page(tab.tabId, { op: 'describe', origins, generation, ref });
+        const described = await this.page(tab.tabId, { op: 'describe', origins, generation, ref }, signal);
         if (described.op !== 'describe') pageError(described);
         if (command.action === 'type') {
           if (described.sensitive) throw new CommandError('sensitive_field', 'Typing into password or payment fields is not allowed');
@@ -211,37 +224,41 @@ export class Executor {
         if (submit || isHighRiskName(described.name)) {
           await this.approve(command, tab, signal, { action: command.action, target: described.name, submit, preview: submit && command.action === 'type' ? approvalPreview(command.params.text) : undefined });
           // The page may have changed while the person decided: act only on the element they approved.
-          const again = await this.page(tab.tabId, { op: 'describe', origins, generation, ref });
+          const again = await this.page(tab.tabId, { op: 'describe', origins, generation, ref }, signal);
           if (again.op !== 'describe' || !sameTarget(described, again)) throw new CommandError('stale_ref', 'The element changed while waiting for approval');
         }
+        if (command.action === 'click') await this.highlight(tab.tabId, { op: 'highlight', origins, generation, ref }, signal);
         this.recheck(command, signal);
         ensure(await guard.checkTab(tab.handle, grant, true));
         if (tab.generation !== generation) throw new CommandError('stale_ref', 'The page changed since that snapshot');
         context.sideEffect = true;
-        const request: PageRequest =
+        const request: DriverRequest =
           command.action === 'click' ? { op: 'click', origins, generation, ref } : { op: 'type', origins, generation, ref, text: command.params.text, submit };
-        await this.page(tab.tabId, request);
+        await this.page(tab.tabId, request, signal);
         await this.settle(tab.tabId, signal, command);
         return this.landed(tab, grant);
       }
       case 'press': {
         await this.watch(tab.tabId, grant);
+        // Keys go to whatever has focus: never a password or payment field, never a frame the grant
+        // does not cover (the adapters check again right before sending).
+        const focused = await this.page(tab.tabId, { op: 'focused', origins }, signal);
+        if (focused.op !== 'describe') pageError(focused);
+        if (focused.sensitive) throw new CommandError('sensitive_field', 'Keys are not sent to password or payment fields');
         if (command.params.key === 'Enter') {
           // Enter submits forms and sends messages in chat boxes: the same confirmation as `type` with submit.
-          const focused = await this.page(tab.tabId, { op: 'focused', origins });
-          if (focused.op !== 'describe') pageError(focused);
           await this.approve(command, tab, signal, { action: 'press', target: focused.name, submit: true });
-          const again = await this.page(tab.tabId, { op: 'focused', origins });
+          const again = await this.page(tab.tabId, { op: 'focused', origins }, signal);
           if (again.op !== 'describe' || !sameTarget(focused, again)) throw new CommandError('stale_ref', 'The focused element changed while waiting for approval');
           ensure(await guard.checkTab(tab.handle, grant, true));
         }
         this.recheck(command, signal);
         context.sideEffect = true;
-        await this.page(tab.tabId, { op: 'press', origins, key: command.params.key });
+        await this.page(tab.tabId, { op: 'press', origins, key: command.params.key }, signal);
         return { tab: tab.handle };
       }
       case 'scroll': {
-        await this.page(tab.tabId, { op: 'scroll', origins, direction: command.params.direction, amount: command.params.amount ?? 'page' });
+        await this.page(tab.tabId, { op: 'scroll', origins, direction: command.params.direction, amount: command.params.amount ?? 'page' }, signal);
         return { tab: tab.handle };
       }
       case 'wait': {
@@ -251,7 +268,7 @@ export class Executor {
         }
         const until = this.now() + this.remaining(command, WAIT_TEXT_MS);
         for (;;) {
-          const found = await this.page(tab.tabId, { op: 'findText', origins, text: command.params.text });
+          const found = await this.page(tab.tabId, { op: 'findText', origins, text: command.params.text }, signal);
           if (found.op === 'findText' && found.found) return { tab: tab.handle };
           if (this.now() >= until) throw new CommandError('timeout', 'The text did not appear in time');
           await this.sleep(250, signal);
@@ -268,9 +285,22 @@ export class Executor {
         this.deps.onTabsChanged();
         return {};
       }
-      case 'screenshot':
-        throw new CommandError('unsupported_capability', 'Screenshots need the advanced build');
+      case 'screenshot': {
+        this.recheck(command, signal);
+        const shot = await this.page(tab.tabId, { op: 'screenshot', origins }, signal);
+        if (shot.op !== 'screenshot') pageError(shot);
+        // The adapter keeps it within the Gateway's limit; check again rather than send an oversized frame.
+        if (Math.floor((shot.data.length * 3) / 4) > MAX_SCREENSHOT_BYTES + 2) throw new CommandError('internal', 'The screenshot is too large');
+        const landed = await this.landed(tab, grant);
+        return { tab: tab.handle, url: landed.url, mime: 'image/jpeg', data_base64: shot.data };
+      }
     }
+  }
+
+  /** Outlines the element for a moment before a click (best effort: a failure does not stop the click). */
+  private async highlight(tabId: number, request: Extract<DriverRequest, { op: 'highlight' }>, signal: AbortSignal): Promise<void> {
+    const shown = await this.deps.api.run(tabId, request, signal).catch(() => null);
+    if (shown?.ok) await this.sleep(HIGHLIGHT_MS, signal);
   }
 
   /** Waits for the person's "Allow once"; anything else (deny, no panel, panel closed, cancel) refuses. */
@@ -296,9 +326,12 @@ export class Executor {
     return { tabs: list };
   }
 
-  private async page(tabId: number, request: PageRequest): Promise<Extract<PageResponse, { ok: true }>> {
-    const response = await this.deps.api.run(tabId, request);
+  private async page(tabId: number, request: DriverRequest, signal: AbortSignal): Promise<Extract<DriverResponse, { ok: true }>> {
+    const response = await this.deps.api.run(tabId, request, signal);
     if (!response.ok) {
+      // Input may already have reached the page (a click pressed, text inserted): the agent must
+      // look before trying again, whatever stopped the rest of the step.
+      if (response.effect === 'maybe') throw new CommandError('outcome_unknown');
       if (response.code === 'stale_ref') {
         // A large DOM change: move the generation so the next snapshot hands out fresh refs.
         this.deps.tabs.bump(tabId);

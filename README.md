@@ -6,7 +6,8 @@ Chat with your Dewee agents, with Super Agent pinned first, in Chrome's side pan
 - **Workspaces and agents:** pick a workspace, search agents, and keep separate sessions per agent.
 - **Reliable chat:** streaming, stop, retry, history, new chat. If the connection drops, the panel checks the server instead of sending your message twice.
 - **Credential cards:** secrets stay in the form and go only to Dewee's respond endpoint. Nothing secret is stored by the extension.
-- **Connected browser (self-hosted, opt-in):** turn on *Connected browser* in Settings, register this browser, and allow chosen agents on chosen sites for a limited time. Agents can then open, read, and act in tabs they open themselves, never in your other tabs. Risky clicks wait for your approval, passwords and payment fields are never read or typed, and *Pause*, *Stop* and *Revoke* are always one click away.
+- **Connected browser (self-hosted, opt-in):** turn on *Connected browser* in Settings, register this browser, and allow chosen agents on chosen sites for a limited time. Agents can then open, read, and act in tabs they open themselves, never in your other tabs. Risky clicks wait for your approval, passwords and payment fields are never read or typed, and *Pause*, *Stop* and *Revoke* are always one click away. Agent tabs carry an "AI" badge, and using one yourself pauses the agents.
+- **Advanced build (sideload, opt-in):** `pnpm build:advanced` adds Chrome's `debugger` permission. After you turn on *Advanced mode* in the browser drawer, agents read pages through the accessibility tree, use real input and can take viewport screenshots, in their own tabs only. It shares the extension ID with the standard build, so install one or the other. See the [threat model](docs/browser-control-threat-model.md#advanced-mode-debugger).
 - **Pending badge**, English and Vietnamese, light/dark/system theme, keyboard shortcuts.
 
 ## Install (development build)

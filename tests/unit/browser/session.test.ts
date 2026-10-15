@@ -36,6 +36,7 @@ function setup() {
   const token = vi.fn(async (profileId: string) => `key-for-${profileId}`);
   const session = new BrowserSession({
     api,
+    action: null,
     token,
     random: () => 0.5,
     now: () => NOW,

@@ -1,17 +1,27 @@
 import { defineConfig } from 'wxt';
 import extensionKey from './extension-public-key.json' with { type: 'json' };
+import { permissionsFor, profileFromEnv } from './src/shared/build-profile';
 
 // End-to-end builds pre-grant loopback hosts so Playwright never meets Chrome's permission prompt,
 // and go to their own folder so they cannot be zipped or shipped by mistake.
 const e2e = process.env.DEWEE_E2E === '1';
 // The Chrome Web Store refuses a manifest with `key` and assigns its own ID, so store builds drop it.
 const store = process.env.DEWEE_STORE === '1';
+// Standard (default) or Advanced (adds the `debugger` permission); see src/shared/build-profile.ts.
+const profile = profileFromEnv(process.env.DEWEE_PROFILE);
+const advanced = profile === 'advanced';
+// The Advanced build has no Web Store listing yet: it ships only as a sideload zip.
+if (advanced && store) throw new Error('The Advanced profile has no Chrome Web Store build yet; use `pnpm zip:advanced` to sideload it.');
+
+const outDir = `${e2e ? '.output-e2e' : store ? '.output-store' : '.output'}${advanced ? '-advanced' : ''}`;
 
 // Thin entrypoints live in src/entrypoints; feature code lives in src/{background,sidepanel,options,...}.
 export default defineConfig({
   srcDir: 'src',
-  outDir: e2e ? '.output-e2e' : store ? '.output-store' : '.output',
+  outDir,
   modules: ['@wxt-dev/module-react'],
+  // Lets the bundler drop the debugger adapter from Standard builds.
+  vite: () => ({ define: { __DEWEE_ADVANCED__: JSON.stringify(advanced) } }),
   hooks: {
     // WXT copies a runtime-registered content script's `matches` into required `host_permissions`. The
     // "Ask Dewee" script must stay optional (asked for in Settings), so drop that copy again.
@@ -22,15 +32,17 @@ export default defineConfig({
     },
   },
   manifest: {
-    name: 'Dewee',
+    name: advanced ? 'Dewee (Advanced)' : 'Dewee',
     // Public key only: pins the unpacked/dev extension ID (poicgajeapmbcilfbeobdfedibiffbbm) so OAuth redirect URIs and
-    // Gateway origin allowlists stay stable. The Chrome Web Store build gets its own store-assigned ID.
+    // Gateway origin allowlists stay stable. Both profiles share it, so only one of them can be installed at a time.
+    // The Chrome Web Store build gets its own store-assigned ID.
     ...(store ? {} : { key: extensionKey.key }),
     description:
       'Chat with your Dewee agents and Super Agent in a side panel, and answer credential requests without exposing secrets.',
     minimum_chrome_version: '116',
     // scripting registers the opt-in "Ask Dewee" page script only after the person turns it on.
-    permissions: ['sidePanel', 'storage', 'identity', 'alarms', 'scripting'],
+    // debugger (Advanced only) is used only after the person turns it on in the side panel, and only on agent-owned tabs.
+    permissions: permissionsFor(profile),
     // Gateway origins are requested at runtime, one origin at a time, after the user adds a profile.
     // "Ask Dewee" on selected text asks for https://*/* when it is turned on in Settings.
     optional_host_permissions: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],

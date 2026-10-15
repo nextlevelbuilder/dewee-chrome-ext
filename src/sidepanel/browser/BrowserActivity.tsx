@@ -5,10 +5,26 @@
  */
 import type { PanelState } from '@/browser/panel-state';
 import type { BackgroundResponse, BrowserRequest } from '@/protocol/messages';
-import { hasMessage, useI18n } from '@/shared/i18n';
+import { hasMessage, useI18n, type Translate } from '@/shared/i18n';
 import { IconPause, IconPlay, IconStop } from '@/shared/icons';
 
 type Call = (request: BrowserRequest) => Promise<BackgroundResponse>;
+
+/** Short local date and time; the raw value when it cannot be read. */
+export function formatTime(locale: string, value: string | number): string {
+  try {
+    return new Intl.DateTimeFormat(locale, { timeStyle: 'short', dateStyle: 'short' }).format(new Date(value));
+  } catch {
+    return String(value);
+  }
+}
+
+/** The notice for a paused or stopped device; a pause the extension made on takeover says why. */
+export function controlNotice(t: Translate, state: Pick<PanelState, 'control' | 'pauseReason'>): string {
+  if (state.control === 'stopped') return t('browser.control.stopped');
+  if (state.control === 'paused') return state.pauseReason === 'takeover' ? t('browser.control.takeover') : t('browser.control.paused');
+  return '';
+}
 
 export function ControlButtons({ control, call }: { control: PanelState['control']; call: Call }) {
   const { t } = useI18n();
@@ -68,13 +84,13 @@ export function ApprovalCards({ approvals, call }: { approvals: PanelState['appr
 
 /** The strip under the header: shown only while something is running, waiting for approval, paused or stopped. */
 export function BrowserActivity({ state, call }: { state: PanelState; call: Call }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   if (state.mode !== 'ready') return null;
   const { activity, control, approvals } = state;
   if (!activity && !approvals.length && control === 'active') return null;
   const actionKey = activity ? `browser.action.${activity.action}` : '';
   return (
-    <section className="browser-activity" aria-label={t('browser.title')}>
+    <section className="browser-activity" aria-label={t('browser.title')} data-testid="browser-activity">
       <div className="browser-activity-row">
         <p className="browser-activity-text small" role="status" aria-live="polite">
           {activity
@@ -84,14 +100,18 @@ export function BrowserActivity({ state, call }: { state: PanelState; call: Call
                 action: hasMessage(actionKey) ? t(actionKey) : activity.action,
                 domain: activity.domain,
               })
-            : control === 'paused'
-              ? t('browser.control.paused')
-              : control === 'stopped'
-                ? t('browser.control.stopped')
-                : ''}
+            : controlNotice(t, state)}
         </p>
         <ControlButtons control={control} call={call} />
       </div>
+      {activity && activity.origins.length ? (
+        <p className="browser-activity-scope muted small mono truncate" data-testid="browser-activity-scope">
+          {t('browser.activity.scope', {
+            origins: activity.origins.join(' '),
+            until: activity.expiresAt ? t('browser.grant.until', { time: formatTime(locale, activity.expiresAt) }) : '',
+          })}
+        </p>
+      ) : null}
       <ApprovalCards approvals={approvals} call={call} />
     </section>
   );
