@@ -68,7 +68,7 @@ All params are strict objects; unknown fields are rejected.
 | `browser.grant.create` | `{device_id, agent_ids:[uuid,...], origins:["https://example.com",...], capabilities:["browser.read"] \| ["browser.read","browser.control"], ttl_seconds}` | `{grant}` |
 | `browser.grant.list` | `{device_id}` | `{grants:[Grant]}` |
 | `browser.grant.revoke` | `{grant_id}` | `{}`; in-flight commands under it are cancelled. |
-| `browser.command.ack` | `{command_id}` | `{}`; the extension accepted the command and is executing it. |
+| `browser.command.ack` | `{command_id}` | `{}`; the extension accepted the command. It starts executing only after this response; an error response (`NOT_FOUND` once the Gateway already finished the command) means it must not run. |
 | `browser.command.result` | `{command_id, ok:true, result}` or `{command_id, ok:false, error:{code, message}}` | `{}` |
 | `browser.control.state` | `{device_id, state:"active" \| "paused" \| "stopped"}` | `{}`; local Pause/Stop. Both `paused` and `stopped` cancel in-flight commands (the extension cancels them locally and may send no result). While not `active` the Gateway refuses new commands with `device_paused`. The state survives a re-attach (Gateway memory); the extension still re-sends it after attach, which also covers a Gateway restart. |
 
@@ -118,8 +118,14 @@ Events `browser.command.cancel` `{command_id}` and `browser.grant.revoked`
 `{grant_id}` and `browser.device.revoked` `{device_id}` are also sent.
 
 The extension must `ack` within 5 s or the Gateway fails the command with
-`device_unresponsive` (safe: not executed). After `ack`, a missing result by the
-deadline yields `outcome_unknown` for `interact` actions and `timeout` for reads.
+`device_unresponsive` (safe: not executed); a socket that drops before the ack
+fails it with `device_offline`. To keep "not executed" true, the extension never
+starts work before the Gateway answered its `ack`. A rejected ack, a closed
+socket or a request timeout means the command does not run: after `NOT_FOUND`
+no result is sent, after any other failure the extension sends a best-effort
+`cancelled` result. A cancel that arrives while the ack is pending stops the
+command before it runs. After `ack`, a missing result by the deadline yields
+`outcome_unknown` for `interact` actions and `timeout` for reads.
 The extension does not queue results across reconnects: when the socket drops
 after `ack`, the Gateway reports `outcome_unknown` (interact) or `cancelled`
 (read) and never re-sends the command. `agent_name` carries the agent key.

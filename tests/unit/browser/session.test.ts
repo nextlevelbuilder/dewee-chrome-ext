@@ -325,7 +325,8 @@ describe('BrowserSession', () => {
       await flush();
       t.socket().event('browser.command', payload('open', { url: `${ORIGIN}/` }));
       await flush();
-      expect(t.socket().methods()).toContain('browser.command.ack');
+      t.socket().reply(t.socket().last('browser.command.ack'));
+      await flush();
 
       void t.session.handleRequest({ type: 'browser.grant.refresh' });
       await flush();
@@ -336,6 +337,30 @@ describe('BrowserSession', () => {
       expect(t.socket().last('browser.command.result').params).toMatchObject({ ok: false, error: { code: 'grant_revoked' } });
     } finally {
       api.hasHostPermission = async () => true;
+    }
+  });
+
+  it('never runs a command whose ack the Gateway refused as unknown, and sends no result', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    const permission = vi.spyOn(api, 'hasHostPermission');
+    const createTab = vi.spyOn(api, 'createTab');
+    try {
+      await t.session.sync();
+      await t.connect();
+      t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+      await flush();
+      t.socket().event('browser.command', payload('open', { url: `${ORIGIN}/` }));
+      await flush();
+      t.socket().refuse(t.socket().last('browser.command.ack'), 'NOT_FOUND');
+      await flush();
+      expect(permission).not.toHaveBeenCalled();
+      expect(createTab).not.toHaveBeenCalled();
+      expect(t.socket().methods()).not.toContain('browser.command.result');
+    } finally {
+      permission.mockRestore();
+      createTab.mockRestore();
     }
   });
 
