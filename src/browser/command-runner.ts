@@ -3,8 +3,9 @@
  * soon as the command is valid, and work starts only after the Gateway answered it: the Gateway
  * treats a command without a confirmed ack as not run (it fails it with `device_unresponsive` or
  * `device_offline`), so running it anyway could repeat a side effect when the agent retries. A
- * rejected ack (unknown command, socket closed, timeout) means the Gateway already finished the
- * command, so nothing runs and no result is sent. Otherwise exactly one result follows. A command
+ * rejected ack never runs: `NOT_FOUND` means the Gateway already finished the command, so no result
+ * is sent; after any other failure (socket closed, request timeout) the Gateway may still have
+ * recorded the ack, so a best-effort `cancelled` result follows. Otherwise exactly one result follows. A command
  * id seen before is never executed again, so a duplicate event cannot repeat a side effect.
  * Cancellation, Pause/Stop, revocation and the deadline abort the command, also while its ack is
  * pending (then it never runs); if it may already have had an effect the result is
@@ -15,6 +16,7 @@
  * resend a command it already dispatched (it reports `outcome_unknown` or `timeout` instead).
  */
 import { CommandError, type ExecutionContext } from './executor';
+import { RelayError } from './transport';
 import { ACTION_CLASS, actionResultSchemas, parseCommand, type BrowserCommand, type BrowserErrorCode, type MethodParams } from './protocol';
 
 export const MAX_IN_FLIGHT = 8;
@@ -28,10 +30,15 @@ export interface RunnerDeps {
   execute(command: BrowserCommand, signal: AbortSignal, context: ExecutionContext): Promise<Record<string, unknown>>;
   /** The device this socket is attached as; commands for another device are refused. */
   deviceId(): string | null;
-  /** A command that ran here ended (for the side panel's timeline): its outcome only, no page data. */
+  /**
+   * A command that ran here ended (for the side panel's timeline): its outcome only, no page data.
+   * A command refused or cancelled before it ran (including while its ack was pending) is not shown.
+   */
   onFinished?(command: BrowserCommand, outcome: { ok: true } | { ok: false; code: BrowserErrorCode }): void;
   now?(): number;
 }
+
+type AckOutcome = { state: 'acked' } | { state: 'rejected'; error: unknown } | { state: 'aborted' };
 
 interface Running {
   command: BrowserCommand;
@@ -84,10 +91,14 @@ export class CommandRunner {
     const timer = setTimeout(() => controller.abort(new CommandError('timeout')), Math.min(deadline - this.now(), MAX_COMMAND_MS));
     try {
       const ack = await this.acknowledge(command.command_id, controller.signal);
-      // The Gateway already answered this command itself; a result would only be refused.
-      if (ack === 'rejected') return;
+      if (ack.state === 'rejected') {
+        // NOT_FOUND: the Gateway already answered this command itself, a result would only be refused.
+        // Otherwise the Gateway may have recorded the ack; tell it the command never ran.
+        if (!(ack.error instanceof RelayError && ack.error.code === 'NOT_FOUND')) await this.fail(command.command_id, 'cancelled');
+        return;
+      }
       // Stopped before anything ran: report why, so the Gateway does not wait for the deadline.
-      if (ack === 'aborted' || controller.signal.aborted) return await this.fail(command.command_id, this.codeFor(controller.signal.reason, controller.signal, context));
+      if (ack.state === 'aborted' || controller.signal.aborted) return await this.fail(command.command_id, this.codeFor(controller.signal.reason, controller.signal, context));
       const result = await this.deps.execute(command, controller.signal, context);
       if (controller.signal.aborted) throw controller.signal.reason;
       const checked = actionResultSchemas[command.action].safeParse(result);
@@ -127,16 +138,16 @@ export class CommandRunner {
   }
 
   /** Sends the ack and waits for the Gateway's answer, or for the command to be aborted first. */
-  private acknowledge(commandId: string, signal: AbortSignal): Promise<'acked' | 'rejected' | 'aborted'> {
-    if (signal.aborted) return Promise.resolve('aborted');
+  private acknowledge(commandId: string, signal: AbortSignal): Promise<AckOutcome> {
+    if (signal.aborted) return Promise.resolve({ state: 'aborted' });
     return new Promise((resolve) => {
-      const onAbort = () => resolve('aborted');
+      const onAbort = () => resolve({ state: 'aborted' });
       signal.addEventListener('abort', onAbort, { once: true });
       Promise.resolve()
         .then(() => this.deps.ack({ command_id: commandId }))
         .then(
-          () => 'acked' as const,
-          () => 'rejected' as const,
+          (): AckOutcome => ({ state: 'acked' }),
+          (error: unknown): AckOutcome => ({ state: 'rejected', error }),
         )
         .then((outcome) => {
           signal.removeEventListener('abort', onAbort);

@@ -1,5 +1,6 @@
 import { CommandRunner, MAX_COMMAND_MS, MAX_IN_FLIGHT, type RunnerDeps } from '@/browser/command-runner';
 import { CommandError } from '@/browser/executor';
+import { RelayError } from '@/browser/transport';
 import { DEVICE_ID, NOW, payload } from './fixtures';
 import { flush } from './fake-socket';
 
@@ -201,28 +202,76 @@ describe('CommandRunner', () => {
       expect(results).toEqual([{ command_id: raw.command_id, ok: true, result: { tab: 't1' } }]);
     });
 
-    it.each(['NOT_FOUND', 'socket closed', 'browser.command.ack timed out'])('never runs a command whose ack was rejected (%s) and sends no result', async (reason) => {
+    function rejectingRunner(error: Error) {
       const execute = vi.fn(async () => ({ tab: 't1' }));
       const onFinished = vi.fn();
       const log: string[] = [];
+      const results: Array<Record<string, unknown>> = [];
       const runner = new CommandRunner({
         ack: async () => {
           log.push('ack');
-          throw new Error(reason);
+          throw error;
         },
-        result: async () => {
+        result: async (params) => {
           log.push('result');
+          results.push(params as Record<string, unknown>);
         },
         execute,
         deviceId: () => DEVICE_ID,
         onFinished,
         now: () => NOW,
       });
-      await runner.handle(payload('click', { tab: 't1', ref: 'e1', generation: 1 }));
+      return { runner, execute, onFinished, log, results };
+    }
+
+    it('never runs a command the Gateway no longer knows (NOT_FOUND) and sends no result', async () => {
+      const t = rejectingRunner(new RelayError('NOT_FOUND', 'unknown command'));
+      await t.runner.handle(payload('click', { tab: 't1', ref: 'e1', generation: 1 }));
+      expect(t.execute).not.toHaveBeenCalled();
+      expect(t.onFinished).not.toHaveBeenCalled();
+      expect(t.log).toEqual(['ack']);
+      expect(t.runner.size).toBe(0);
+    });
+
+    it.each([new RelayError('timeout', 'browser.command.ack timed out'), new RelayError('device_offline', 'Connection closed'), new Error('unexpected')])(
+      'never runs a command whose ack failed otherwise (%s) and reports it as cancelled',
+      async (error) => {
+        const t = rejectingRunner(error);
+        const raw = payload('click', { tab: 't1', ref: 'e1', generation: 1 });
+        await t.runner.handle(raw);
+        expect(t.execute).not.toHaveBeenCalled();
+        expect(t.onFinished).not.toHaveBeenCalled();
+        expect(t.log).toEqual(['ack', 'result']);
+        expect(t.results).toEqual([{ command_id: raw.command_id, ok: false, error: { code: 'cancelled', message: expect.any(String) } }]);
+        expect(t.runner.size).toBe(0);
+      },
+    );
+
+    it('ignores a failed result after a failed ack', async () => {
+      const execute = vi.fn(async () => ({ tab: 't1' }));
+      const runner = new CommandRunner({
+        ack: () => Promise.reject(new RelayError('device_offline', 'Connection closed')),
+        result: () => Promise.reject(new RelayError('device_offline', 'Not connected')),
+        execute,
+        deviceId: () => DEVICE_ID,
+        now: () => NOW,
+      });
+      await expect(runner.handle(payload('click', { tab: 't1', ref: 'e1', generation: 1 }))).resolves.toBeUndefined();
       expect(execute).not.toHaveBeenCalled();
-      expect(onFinished).not.toHaveBeenCalled();
-      expect(log).toEqual(['ack']);
-      expect(runner.size).toBe(0);
+    });
+
+    it('never runs a command cancelled in the same tick its ack resolved', async () => {
+      const gate = pendingAck();
+      const execute = vi.fn(async () => ({ tab: 't1' }));
+      const { runner, results } = setup(execute, gate.ack);
+      const raw = payload('click', { tab: 't1', ref: 'e1', generation: 1 });
+      const done = runner.handle(raw);
+      await flush();
+      gate.resolve();
+      expect(runner.cancel(raw.command_id as string)).toBe(true);
+      await done;
+      expect(execute).not.toHaveBeenCalled();
+      expect(results).toEqual([{ command_id: raw.command_id, ok: false, error: { code: 'cancelled', message: expect.any(String) } }]);
     });
 
     it('never runs a command cancelled while its ack is pending, even if the ack then resolves', async () => {
