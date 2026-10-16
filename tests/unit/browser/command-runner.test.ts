@@ -3,12 +3,13 @@ import { CommandError } from '@/browser/executor';
 import { DEVICE_ID, NOW, payload } from './fixtures';
 import { flush } from './fake-socket';
 
-function setup(execute: RunnerDeps['execute']) {
+function setup(execute: RunnerDeps['execute'], ack: () => Promise<unknown> = async () => ({})) {
   const log: string[] = [];
   const results: Array<Record<string, unknown>> = [];
   const deps: RunnerDeps = {
     ack: async ({ command_id }) => {
       log.push(`ack:${command_id}`);
+      return ack();
     },
     result: async (params) => {
       log.push(`result:${params.command_id}`);
@@ -30,6 +31,17 @@ const untilAborted = (signal: AbortSignal) =>
   new Promise<never>((_, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), { once: true });
   });
+
+/** An ack the test answers by hand. */
+function pendingAck() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { ack: () => promise, resolve, reject };
+}
 
 describe('CommandRunner', () => {
   it('acks after validation, then executes, then sends exactly one result', async () => {
@@ -171,5 +183,109 @@ describe('CommandRunner', () => {
     expect(results[0]).toMatchObject({ ok: false, error: { code: 'busy' } });
     runner.cancelAll();
     await Promise.all(runs);
+  });
+
+  describe('waits for the Gateway to answer the ack', () => {
+    it('starts work only after the ack resolved, and runs it exactly once', async () => {
+      const gate = pendingAck();
+      const execute = vi.fn(async () => ({ tab: 't1' }));
+      const { runner, log, results } = setup(execute, gate.ack);
+      const raw = payload('scroll', { tab: 't1', direction: 'down' });
+      const done = runner.handle(raw);
+      await flush();
+      expect(log).toEqual([`ack:${raw.command_id}`]);
+      expect(execute).not.toHaveBeenCalled();
+      gate.resolve();
+      await done;
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(results).toEqual([{ command_id: raw.command_id, ok: true, result: { tab: 't1' } }]);
+    });
+
+    it.each(['NOT_FOUND', 'socket closed', 'browser.command.ack timed out'])('never runs a command whose ack was rejected (%s) and sends no result', async (reason) => {
+      const execute = vi.fn(async () => ({ tab: 't1' }));
+      const onFinished = vi.fn();
+      const log: string[] = [];
+      const runner = new CommandRunner({
+        ack: async () => {
+          log.push('ack');
+          throw new Error(reason);
+        },
+        result: async () => {
+          log.push('result');
+        },
+        execute,
+        deviceId: () => DEVICE_ID,
+        onFinished,
+        now: () => NOW,
+      });
+      await runner.handle(payload('click', { tab: 't1', ref: 'e1', generation: 1 }));
+      expect(execute).not.toHaveBeenCalled();
+      expect(onFinished).not.toHaveBeenCalled();
+      expect(log).toEqual(['ack']);
+      expect(runner.size).toBe(0);
+    });
+
+    it('never runs a command cancelled while its ack is pending, even if the ack then resolves', async () => {
+      const gate = pendingAck();
+      const execute = vi.fn(async () => ({ tab: 't1' }));
+      const { runner, results } = setup(execute, gate.ack);
+      const raw = payload('click', { tab: 't1', ref: 'e1', generation: 1 });
+      const done = runner.handle(raw);
+      await flush();
+      expect(runner.cancel(raw.command_id as string)).toBe(true);
+      await done;
+      gate.resolve();
+      await flush();
+      expect(execute).not.toHaveBeenCalled();
+      expect(results).toEqual([{ command_id: raw.command_id, ok: false, error: { code: 'cancelled', message: expect.any(String) } }]);
+      expect(runner.size).toBe(0);
+    });
+
+    it('never runs a command revoked while its ack is pending and reports the local reason', async () => {
+      const gate = pendingAck();
+      const execute = vi.fn(async () => ({ tab: 't1' }));
+      const { runner, results } = setup(execute, gate.ack);
+      const raw = payload('click', { tab: 't1', ref: 'e1', generation: 1 });
+      const done = runner.handle(raw);
+      await flush();
+      expect(runner.cancelAll('grant_revoked')).toBe(1);
+      await done;
+      expect(execute).not.toHaveBeenCalled();
+      expect(results[0]).toMatchObject({ ok: false, error: { code: 'grant_revoked' } });
+    });
+
+    it('never runs a command whose deadline passes while its ack is pending', async () => {
+      vi.useFakeTimers();
+      try {
+        const gate = pendingAck();
+        const execute = vi.fn(async () => ({ tab: 't1' }));
+        const { runner, results } = setup(execute, gate.ack);
+        const done = runner.handle(payload('click', { tab: 't1', ref: 'e1', generation: 1 }, { deadline: new Date(NOW + 2_000).toISOString() }));
+        await flush();
+        vi.advanceTimersByTime(2_000);
+        await done;
+        gate.resolve();
+        await flush();
+        expect(execute).not.toHaveBeenCalled();
+        expect(results[0]).toMatchObject({ ok: false, error: { code: 'timeout' } });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('ignores a duplicate command event while the first ack is pending', async () => {
+      const gate = pendingAck();
+      const execute = vi.fn(async () => ({ tab: 't1' }));
+      const { runner, log, results } = setup(execute, gate.ack);
+      const raw = payload('click', { tab: 't1', ref: 'e1', generation: 1 });
+      const first = runner.handle(raw);
+      await flush();
+      await runner.handle(raw);
+      gate.resolve();
+      await first;
+      expect(log.filter((l) => l.startsWith('ack'))).toHaveLength(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(results).toHaveLength(1);
+    });
   });
 });

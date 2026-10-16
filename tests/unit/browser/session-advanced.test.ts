@@ -131,11 +131,21 @@ function setup(options: { advanced?: boolean; grant?: Grant; engine?: (options: 
     socket().reply(socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [liveGrant] });
     await flush();
   };
+  /** Confirms the command's ack as the Gateway would; the extension starts no work before that. */
+  const confirmAck = async (commandId: unknown) => {
+    const ack = await vi.waitFor(() => {
+      const found = socket().sent.find((f) => f.method === 'browser.command.ack' && f.params.command_id === commandId);
+      if (!found) throw new Error('no ack yet');
+      return found;
+    });
+    socket().reply(ack);
+  };
   /** Sends one command and waits for its result frame. */
   const command = async (action: Parameters<typeof payload>[0], params: Record<string, unknown>) => {
     const frame = payload(action, params);
     const before = socket().methods().filter((m) => m === 'browser.command.result').length;
     socket().event('browser.command', frame);
+    await confirmAck(frame.command_id);
     await vi.waitFor(() => expect(socket().methods().filter((m) => m === 'browser.command.result').length).toBe(before + 1), { timeout: 3000 });
     return socket().last('browser.command.result').params as { ok: boolean; result?: Record<string, unknown>; error?: { code: string } };
   };
@@ -146,7 +156,7 @@ function setup(options: { advanced?: boolean; grant?: Grant; engine?: (options: 
     socket().reply(socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [liveGrant] });
     await expect(done).resolves.toEqual({ ok: true });
   };
-  return { session, tabs, api, socket, ready, command, enable, badges, clock, engine: () => engine as FakeEngine | null };
+  return { session, tabs, api, socket, ready, command, confirmAck, enable, badges, clock, engine: () => engine as FakeEngine | null };
 }
 
 beforeEach(async () => {
@@ -358,7 +368,9 @@ describe('BrowserSession: Advanced build', () => {
         );
 
       const before = t.socket().methods().filter((m) => m === 'browser.command.result').length;
-      t.socket().event('browser.command', payload(action, params));
+      const frame = payload(action, params);
+      t.socket().event('browser.command', frame);
+      await t.confirmAck(frame.command_id);
       await vi.waitFor(() => expect(debuggerApi.attach).toHaveBeenCalled());
       void t.session.handleRequest({ type: 'browser.control', state: 'paused' });
       await flush();

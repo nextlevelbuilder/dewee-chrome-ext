@@ -1,9 +1,14 @@
 /**
  * Receipt of `browser.command` events: validate, acknowledge, execute, report. The ack goes out as
- * soon as the command is valid (before any work); exactly one result follows. A command id seen
- * before is never executed again, so a duplicate event cannot repeat a side effect. Cancellation,
- * Pause/Stop, revocation and the deadline abort the running command; if it may already have had
- * an effect the result is `outcome_unknown`, and the agent has to snapshot again.
+ * soon as the command is valid, and work starts only after the Gateway answered it: the Gateway
+ * treats a command without a confirmed ack as not run (it fails it with `device_unresponsive` or
+ * `device_offline`), so running it anyway could repeat a side effect when the agent retries. A
+ * rejected ack (unknown command, socket closed, timeout) means the Gateway already finished the
+ * command, so nothing runs and no result is sent. Otherwise exactly one result follows. A command
+ * id seen before is never executed again, so a duplicate event cannot repeat a side effect.
+ * Cancellation, Pause/Stop, revocation and the deadline abort the command, also while its ack is
+ * pending (then it never runs); if it may already have had an effect the result is
+ * `outcome_unknown`, and the agent has to snapshot again.
  *
  * At-most-once holds only while this worker lives: the seen ids are kept in memory. After the
  * service worker restarts, not running a command twice relies on the Gateway, which does not
@@ -76,10 +81,13 @@ export class CommandRunner {
     const controller = new AbortController();
     const context: ExecutionContext = { sideEffect: false };
     this.running.set(command.command_id, { command, controller, context });
-    // The ack frame is written before any work starts.
-    void this.deps.ack({ command_id: command.command_id }).catch(() => undefined);
     const timer = setTimeout(() => controller.abort(new CommandError('timeout')), Math.min(deadline - this.now(), MAX_COMMAND_MS));
     try {
+      const ack = await this.acknowledge(command.command_id, controller.signal);
+      // The Gateway already answered this command itself; a result would only be refused.
+      if (ack === 'rejected') return;
+      // Stopped before anything ran: report why, so the Gateway does not wait for the deadline.
+      if (ack === 'aborted' || controller.signal.aborted) return await this.fail(command.command_id, this.codeFor(controller.signal.reason, controller.signal, context));
       const result = await this.deps.execute(command, controller.signal, context);
       if (controller.signal.aborted) throw controller.signal.reason;
       const checked = actionResultSchemas[command.action].safeParse(result);
@@ -116,6 +124,25 @@ export class CommandRunner {
 
   cancelAll(code: BrowserErrorCode = 'cancelled'): number {
     return this.cancelWhere(() => true, code);
+  }
+
+  /** Sends the ack and waits for the Gateway's answer, or for the command to be aborted first. */
+  private acknowledge(commandId: string, signal: AbortSignal): Promise<'acked' | 'rejected' | 'aborted'> {
+    if (signal.aborted) return Promise.resolve('aborted');
+    return new Promise((resolve) => {
+      const onAbort = () => resolve('aborted');
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve()
+        .then(() => this.deps.ack({ command_id: commandId }))
+        .then(
+          () => 'acked' as const,
+          () => 'rejected' as const,
+        )
+        .then((outcome) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(outcome);
+        });
+    });
   }
 
   private codeFor(error: unknown, signal: AbortSignal, context: ExecutionContext): BrowserErrorCode {

@@ -325,7 +325,8 @@ describe('BrowserSession', () => {
       await flush();
       t.socket().event('browser.command', payload('open', { url: `${ORIGIN}/` }));
       await flush();
-      expect(t.socket().methods()).toContain('browser.command.ack');
+      t.socket().reply(t.socket().last('browser.command.ack'));
+      await flush();
 
       void t.session.handleRequest({ type: 'browser.grant.refresh' });
       await flush();

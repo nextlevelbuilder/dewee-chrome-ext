@@ -10,3 +10,7 @@ First MVP of the Dewee Chrome extension.
 - Cards: secure credentials form for `secret_request`, `oauth_request`, choice, command preview, progress; other kinds shown read-only.
 - Pending-card badge, English and Vietnamese, light/dark/system theme, keyboard shortcuts (Alt+Shift+D, Alt+N, /, Esc).
 - Credentials kept in `storage.session` by default; opt-in "remember".
+
+### Fixed
+
+- Connected browser: a command runs only after the Gateway confirmed its ack. A command the Gateway already failed as not run (`device_unresponsive`, `device_offline`) can no longer run late and repeat a side effect when the agent retries; a cancel while the ack is pending stops it before it runs.
