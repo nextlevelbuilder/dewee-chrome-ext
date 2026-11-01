@@ -80,6 +80,17 @@ Done on 1 November 2026:
 - The Cloud allowlists were set as Worker secrets on `dewee-app`, with the store ID only. On `dewee-app-staging` they hold the dev ID `poicgajeapmbcilfbeobdfedibiffbbm` plus the store ID. A CORS preflight confirmed both.
 - The store origin was added to `GOCLAW_ALLOWED_ORIGINS` on the production Gateway (`dewee.zuey.me`), with a backup made first. The staging Gateway has no allowlist, so it already accepts every origin and was left unchanged.
 
+## Reviewer test account
+
+- Dewee Cloud got a hosted email+password sign-in, limited to the emails in the Worker secret
+  `DEWEE_HOSTED_PASSWORD_SIGN_IN_EMAILS` (shipped in Dewee `v3.48.0`).
+- The production account is `chrome-review@nextlevelbuilder.io` with workspace "Store Review". An access grant on that
+  workspace expires on 1 December 2026. The password is stored in the `ak secrets` vault as
+  `DEWEE_CHROME_REVIEW_PASSWORD_PRODUCTION`; staging has the same email, stored as `DEWEE_CHROME_REVIEW_PASSWORD_STAGING`,
+  with no grant.
+- Remove after the review: run `apps/dewee-app/scripts/store-review-account.mjs --remove` in the Dewee repo for each
+  environment, then delete `DEWEE_HOSTED_PASSWORD_SIGN_IN_EMAILS` on `dewee-app` and `dewee-app-staging`.
+
 3. Tag `v0.1.0` so the GitHub release workflow publishes matching zips, and date the `CHANGELOG.md` entry.
 
 ## Open questions
