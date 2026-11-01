@@ -76,6 +76,10 @@ The store ID is `fckahaihlmpbcldmlopffgmocflpnjha`. Before Cloud sign-in works f
    - `DEWEE_EXTENSION_ORIGINS` += `chrome-extension://fckahaihlmpbcldmlopffgmocflpnjha`
 2. Each self-hosted Gateway that store users connect to: add `chrome-extension://fckahaihlmpbcldmlopffgmocflpnjha` to
    `GOCLAW_ALLOWED_ORIGINS`.
+Done on 1 November 2026:
+- The Cloud allowlists were set as Worker secrets on `dewee-app`, with the store ID only. On `dewee-app-staging` they hold the dev ID `poicgajeapmbcilfbeobdfedibiffbbm` plus the store ID. A CORS preflight confirmed both.
+- The store origin was added to `GOCLAW_ALLOWED_ORIGINS` on the production Gateway (`dewee.zuey.me`), with a backup made first. The staging Gateway has no allowlist, so it already accepts every origin and was left unchanged.
+
 3. Tag `v0.1.0` so the GitHub release workflow publishes matching zips, and date the `CHANGELOG.md` entry.
 
 ## Open questions
