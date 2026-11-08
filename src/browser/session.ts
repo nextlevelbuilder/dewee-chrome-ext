@@ -68,6 +68,8 @@ export const TICKET_RENEW_MARGIN_MS = 60_000;
 /** Cloud: a running command may delay the ticket renewal until this long before expiry. */
 const TICKET_LAST_CALL_MS = 10_000;
 const TICKET_BUSY_RETRY_MS = 5_000;
+/** Never renew sooner than this after a ticket arrived (clock skew, very short tickets), nor retry a failed renewal sooner. */
+export const TICKET_MIN_RENEW_MS = 30_000;
 /** How long a sign-out or profile switch waits for the Gateway to confirm shared tabs were revoked. */
 const SHARE_REVOKE_WAIT_MS = 2_000;
 /** Transport stop codes that a retry cannot fix: wait for a new credential. */
@@ -177,6 +179,10 @@ export class BrowserSession {
   /** Cloud: the relay ticket fetched for the next `connect`, cleared as soon as the key is sent. Memory only. */
   private ticket: { key: string; wsUrl: string } | null = null;
   private ticketExpiresAt: number | null = null;
+  /** Local time at which to renew, measured from when the ticket arrived. */
+  private ticketRenewAt: number | null = null;
+  /** Shared-tab grants ended while the socket was down; revoked after the next attach (best effort, memory only). */
+  private readonly pendingRevokes = new Set<string>();
   private renewTimer: ReturnType<typeof setTimeout> | null = null;
   private epoch = 0;
   private transport: RelayTransport | null = null;
@@ -339,6 +345,13 @@ export class BrowserSession {
     this.ownGrants = ownGrantsRecord.safeParse(local[grantsKey(profile.id)]).data ?? [];
     this.restoreControl(storedControl);
     this.tabs.restore(session[tabsKey(profile.id)]);
+    // Shares do not survive a worker restart: drop them here and revoke their grants after the next attach.
+    for (const tab of this.tabs.all()) {
+      if (!tab.shared) continue;
+      this.pendingRevokes.add(tab.grantId);
+      this.tabs.releaseGrant(tab.grantId);
+      this.ownGrants = this.ownGrants.filter((id) => id !== tab.grantId);
+    }
     const storedDebugger = debuggerRecord.safeParse(session[debuggerKey(profile.id)]).data;
     this.debuggerPrefs = this.router.advancedAvailable && storedDebugger ? storedDebugger : { enabled: false, fallback: true };
     // A worker that restarted may have left the debugger attached to an agent's tab: let it go.
@@ -393,6 +406,8 @@ export class BrowserSession {
 
   /** Cloud: a fresh relay ticket before every socket. Kept in memory only, for the `connect` frame. */
   private async fetchTicket(profileId: string, epoch: number): Promise<void> {
+    // A renewal already fetched the next ticket.
+    if (this.ticket) return;
     let ticket: RelayTicket;
     try {
       ticket = await (this.deps.cloud ?? cloudRelayApi).ticket(profileId);
@@ -400,8 +415,21 @@ export class BrowserSession {
       throw ticketError(error);
     }
     if (epoch !== this.epoch) throw new RelayError('cancelled', 'The profile changed');
+    this.storeTicket(ticket);
+  }
+
+  /**
+   * Keeps a ticket for the next `connect`. The renewal time is measured from receipt on the local
+   * clock: the remaining lifetime as the server states it, minus the margin, but never less than half
+   * of it or `TICKET_MIN_RENEW_MS`, so clock skew or a very short ticket cannot cause a reconnect loop.
+   */
+  private storeTicket(ticket: RelayTicket): void {
+    const now = this.now();
+    const expiresAt = Date.parse(ticket.expires_at);
+    const lifetime = Math.max(0, expiresAt - now);
     this.ticket = { key: ticket.key, wsUrl: ticket.ws_url };
-    this.ticketExpiresAt = Date.parse(ticket.expires_at);
+    this.ticketExpiresAt = expiresAt;
+    this.ticketRenewAt = now + Math.max(TICKET_MIN_RENEW_MS, lifetime / 2, lifetime - TICKET_RENEW_MARGIN_MS);
   }
 
   /** The ticket key, once: it is forgotten as soon as it goes into the `connect` frame. */
@@ -415,19 +443,41 @@ export class BrowserSession {
   /** Cloud: reconnect with a fresh ticket shortly before the current one expires. */
   private scheduleRenew(transport: RelayTransport): void {
     this.clearRenewTimer();
-    if (this.kind !== 'cloud' || this.ticketExpiresAt === null) return;
-    const delay = Math.max(0, this.ticketExpiresAt - TICKET_RENEW_MARGIN_MS - this.now());
-    this.renewTimer = setTimeout(() => this.renewTicket(transport), delay);
+    if (this.kind !== 'cloud' || this.ticketRenewAt === null) return;
+    const delay = Math.max(TICKET_MIN_RENEW_MS, this.ticketRenewAt - this.now());
+    this.renewTimer = setTimeout(() => void this.renewTicket(transport), delay);
   }
 
-  private renewTicket(transport: RelayTransport): void {
+  /**
+   * Fetches the next ticket first and reconnects only with one that expires later than the current
+   * key; a failed or stale answer keeps the current socket and tries again after `TICKET_MIN_RENEW_MS`.
+   */
+  private async renewTicket(transport: RelayTransport): Promise<void> {
     this.renewTimer = null;
-    if (this.transport !== transport) return;
+    const profileId = this.profileId;
+    if (this.transport !== transport || !profileId) return;
+    const retry = (ms: number) => {
+      if (this.transport === transport) this.renewTimer = setTimeout(() => void this.renewTicket(transport), ms);
+    };
     // A reconnect cancels running commands: let one finish first while the key still has time left.
     if (this.runner.size > 0 && this.ticketExpiresAt !== null && this.now() < this.ticketExpiresAt - TICKET_LAST_CALL_MS) {
-      this.renewTimer = setTimeout(() => this.renewTicket(transport), TICKET_BUSY_RETRY_MS);
+      retry(TICKET_BUSY_RETRY_MS);
       return;
     }
+    const previous = this.ticketExpiresAt;
+    let ticket: RelayTicket;
+    try {
+      ticket = await (this.deps.cloud ?? cloudRelayApi).ticket(profileId);
+    } catch {
+      retry(TICKET_MIN_RENEW_MS);
+      return;
+    }
+    if (this.transport !== transport) return;
+    if (previous !== null && !(Date.parse(ticket.expires_at) > previous)) {
+      retry(TICKET_MIN_RENEW_MS);
+      return;
+    }
+    this.storeTicket(ticket);
     transport.renew();
   }
 
@@ -470,6 +520,8 @@ export class BrowserSession {
     this.clearRenewTimer();
     this.ticket = null;
     this.ticketExpiresAt = null;
+    this.ticketRenewAt = null;
+    this.pendingRevokes.clear();
     this.markTabs();
     this.connection = 'offline';
     this.error = undefined;
@@ -525,6 +577,11 @@ export class BrowserSession {
       this.attachedTransport = transport;
       // After a worker restart: a shared tab may have closed or left its site while nobody watched.
       for (const tab of this.tabs.all()) if (tab.shared) void this.checkShareOrigin(tab.tabId);
+      // Shares that ended while the socket was down.
+      for (const grantId of [...this.pendingRevokes]) {
+        this.pendingRevokes.delete(grantId);
+        void transport.request('browser.grant.revoke', { grant_id: grantId }).catch(() => undefined);
+      }
       // Re-send the person's own Pause/Stop/Resume: the Gateway may hold an older state, or none
       // after its own restart. Without a stored choice nothing is sent, so `active` never
       // replaces a pause the extension does not know about.
@@ -597,6 +654,7 @@ export class BrowserSession {
     const transport = this.transport;
     this.dropGrant(grantId);
     if (transport?.isReady) await transport.request('browser.grant.revoke', { grant_id: grantId }).catch(() => undefined);
+    else this.pendingRevokes.add(grantId);
   }
 
   /** The shared tab must still show its granted origin; anything else (another site, a hidden URL, gone) ends the share. */
@@ -1046,14 +1104,15 @@ export class BrowserSession {
     if (!origin || !isExactOrigin(origin)) return { ok: false, code: 'tab_not_shareable' };
     if (!(await this.api.hasHostPermission(origin))) return { ok: false, code: 'origin_permission_missing' };
     const existing = this.tabs.byTabId(request.tabId);
-    if (existing) return existing.shared ? { ok: true } : { ok: false, code: 'tab_in_use' };
+    // Already shared: the same agent is a no-op; another agent needs the current share stopped first.
+    if (existing) return existing.shared && existing.agentId === request.agentId ? { ok: true } : { ok: false, code: 'tab_in_use' };
     if (!this.device) {
       const enrolled = await this.enroll(transport, '');
       if (!enrolled.ok) return enrolled;
     }
     const device = this.device;
     if (!device || this.attachedTransport !== transport) return { ok: false, code: 'device_offline' };
-    const handle = this.tabs.reserveHandle();
+    const handle = this.tabs.sharedHandle();
     const capabilities: ['browser.read', 'browser.control'] = ['browser.read', 'browser.control'];
     let grant: Grant;
     try {
@@ -1080,6 +1139,9 @@ export class BrowserSession {
     this.scheduleExpiry();
     this.persistTabs();
     this.broadcast();
+    // A navigation between the check above and registering the tab is not seen by onTabUpdated: look again.
+    await this.checkShareOrigin(request.tabId);
+    if (!this.grants.has(grant.grant_id)) return { ok: false, code: 'tab_changed' };
     return { ok: true };
   }
 

@@ -15,6 +15,8 @@ export const ERROR_CODES = [
   'grant_expired',
   'grant_revoked',
   'origin_not_granted',
+  /** A shared tab no longer shows its granted origin. */
+  'origin_not_allowed',
   'capability_not_granted',
   'unsupported_capability',
   'restricted_page',
@@ -73,7 +75,8 @@ export const SHARED_TAB_TTL_MAX = 3_600;
 /** Device tab handle as the Gateway accepts it in a shared-tab grant. */
 export const TAB_HANDLE_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
-const tab = z.string().regex(/^t[1-9]\d{0,8}$/);
+/** `t1`, `t2`... for tabs an agent opened; a random `s_...` handle for a shared tab. */
+const tab = z.string().regex(/^(t[1-9]\d{0,8}|s_[A-Za-z0-9_-]{22})$/);
 const ref = z.string().regex(/^e[1-9]\d{0,8}$/);
 const generation = z.number().int().nonnegative();
 const url = z.string().min(1).max(4096);
@@ -109,6 +112,8 @@ export const commandEnvelopeSchema = z
     deadline: z.iso.datetime({ offset: true }),
     /** Present only when the command runs under a shared-tab grant: the one tab it may touch. */
     grant_tab: z.string().regex(TAB_HANDLE_PATTERN).optional(),
+    /** With `grant_tab`: the one origin of that shared-tab grant. */
+    grant_origin: z.string().max(300).optional(),
   })
   .strict();
 export type CommandEnvelope = z.infer<typeof commandEnvelopeSchema>;

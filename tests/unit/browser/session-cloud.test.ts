@@ -26,7 +26,7 @@ function setup() {
     createTab: async () => 99,
     updateTab: async () => undefined,
     removeTab: async () => undefined,
-    getTab: async (id) => tabs.get(id) ?? null,
+    getTab: vi.fn(async (id: number) => tabs.get(id) ?? null),
     run: async () => ({ ok: false, code: 'internal' }),
     hasHostPermission: async () => true,
   };
@@ -73,7 +73,7 @@ function setup() {
     await expect(pending).resolves.toEqual({ ok: true });
     return create;
   };
-  return { session, sockets, socket, connect, share, tabs, ticket, cloudApi, setClock: (at: number) => (clock = at) };
+  return { session, sockets, socket, connect, share, tabs, ticket, cloudApi, getTab: api.getTab as ReturnType<typeof vi.fn>, setClock: (at: number) => (clock = at) };
 }
 
 async function signedIn(scope = 'chat workspaces actions browser') {
@@ -120,12 +120,36 @@ describe('BrowserSession on Dewee Cloud', () => {
       expect(t.ticket).toHaveBeenCalledTimes(1);
       vi.advanceTimersByTime(9 * 60_000 - 1);
       expect(t.sockets).toHaveLength(1);
+      t.setClock(NOW + 9 * 60_000);
       vi.advanceTimersByTime(1);
       await flush();
       expect(t.ticket).toHaveBeenCalledTimes(2);
       expect(t.sockets).toHaveLength(2);
       await t.connect();
       expect(t.socket().last('connect').params).toMatchObject({ token: `${KEY}-2` });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits at least 30 s before renewing a ticket that looks expired (clock skew) and keeps the socket on a stale answer', async () => {
+    vi.useFakeTimers();
+    try {
+      await fakeBrowser.storage.local.set({ [policyKey(cloud.id)]: { accepted_at: NOW } });
+      const t = setup();
+      // The local clock runs ahead of the server: the ticket already looks expired.
+      t.ticket.mockImplementation(async () => ({ key: KEY, expires_at: new Date(NOW - 5_000).toISOString(), ws_url: 'wss://relay.example.test/ws' }));
+      await t.session.sync();
+      await t.connect();
+      vi.advanceTimersByTime(29_999);
+      await flush();
+      expect(t.ticket).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      await flush();
+      // The answer does not expire later: no reconnect, try again later.
+      expect(t.ticket).toHaveBeenCalledTimes(2);
+      expect(t.sockets).toHaveLength(1);
+      expect(t.session.state().connection).toBe('connected');
     } finally {
       vi.useRealTimers();
     }
@@ -169,9 +193,57 @@ describe('BrowserSession on Dewee Cloud', () => {
     it('registers the browser and creates a one-tab, one-origin grant for at most an hour', async () => {
       const { t, create } = await shared();
       expect(t.socket().last('browser.device.enroll').params).toMatchObject({ name: expect.stringMatching(/^Chrome on /) });
-      expect(create.params).toEqual({ device_id: DEVICE_ID, agent_ids: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read', 'browser.control'], ttl_seconds: 3600, tab: 't1' });
+      expect(create.params).toEqual({ device_id: DEVICE_ID, agent_ids: [AGENT_ID], origins: [ORIGIN], capabilities: ['browser.read', 'browser.control'], ttl_seconds: 3600, tab: expect.stringMatching(/^s_[A-Za-z0-9_-]{22}$/) });
       expect(t.session.state().shares).toEqual([{ grantId: GRANT_ID, tabId: TAB, agentName: 'Researcher', domain: 'shop.example.test', expiresAt: expect.any(String) }]);
       expect(t.session.state().tabs).toEqual([]);
+    });
+
+    it('keeps the share for the same agent and refuses another agent on the same tab', async () => {
+      const { t } = await shared();
+      await expect(t.session.handleRequest({ type: 'browser.share.start', tabId: TAB, agentId: AGENT_ID, agentName: 'Researcher' })).resolves.toEqual({ ok: true });
+      await expect(t.session.handleRequest({ type: 'browser.share.start', tabId: TAB, agentId: '44444444-4444-4444-8444-444444444444', agentName: 'Other' })).resolves.toEqual({ ok: false, code: 'tab_in_use' });
+      expect(t.session.state().shares).toHaveLength(1);
+    });
+
+    it('revokes a share that ended while the socket was down after the next attach', async () => {
+      vi.useFakeTimers();
+      try {
+        const { t } = await shared();
+        t.socket().drop();
+        await t.session.handleRequest({ type: 'browser.share.stop', grantId: GRANT_ID });
+        expect(t.session.state().shares).toEqual([]);
+        vi.advanceTimersByTime(1_000);
+        await t.connect();
+        t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+        await flush();
+        expect(t.socket().last('browser.grant.revoke').params).toEqual({ grant_id: GRANT_ID });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('uses a fresh random handle for every share', async () => {
+      const { t, create } = await shared();
+      t.tabs.set(8, { url: `${ORIGIN}/other`, status: 'complete', active: false });
+      const pending = t.session.handleRequest({ type: 'browser.share.start', tabId: 8, agentId: AGENT_ID, agentName: 'Researcher' });
+      await flush();
+      const second = t.socket().last('browser.grant.create');
+      expect(second.params.tab).not.toBe(create.params.tab);
+      expect(second.params.tab).toMatch(/^s_[A-Za-z0-9_-]{22}$/);
+      t.socket().refuse(second, 'INVALID_REQUEST');
+      await pending;
+    });
+
+    it('does not survive a worker restart: the share is dropped and its grant revoked', async () => {
+      await shared();
+      // A new worker reads the same storage.
+      const restarted = setup();
+      await restarted.session.sync();
+      await restarted.connect();
+      restarted.socket().reply(restarted.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: 's_AAAAAAAAAAAAAAAAAAAAAA' })] });
+      await flush();
+      expect(restarted.session.state().shares).toEqual([]);
+      expect(restarted.socket().last('browser.grant.revoke').params).toEqual({ grant_id: GRANT_ID });
     });
 
     it('ends when the tab closes, and revokes the grant on the Gateway', async () => {
@@ -232,6 +304,27 @@ describe('BrowserSession on Dewee Cloud', () => {
       expect(t.session.state()).toMatchObject({ mode: 'signed_out', shares: [] });
     });
 
+    it('ends a share whose tab moved to another site just as it was registered', async () => {
+      await fakeBrowser.storage.local.set({ [policyKey(cloud.id)]: { accepted_at: NOW } });
+      const t = setup();
+      await t.session.sync();
+      await t.connect();
+      const page = { url: `${ORIGIN}/cart`, status: 'complete', active: true };
+      t.getTab.mockResolvedValueOnce(page).mockResolvedValueOnce(page).mockResolvedValueOnce({ url: 'https://elsewhere.example.test/', status: 'loading', active: true });
+      const pending = t.session.handleRequest({ type: 'browser.share.start', tabId: TAB, agentId: AGENT_ID, agentName: 'Researcher' });
+      await flush();
+      t.socket().reply(t.socket().last('browser.device.enroll'), { device_id: DEVICE_ID });
+      await flush();
+      t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+      await flush();
+      const create = t.socket().last('browser.grant.create');
+      t.socket().reply(create, { grant: grant({ tab: create.params.tab as string }) });
+      await flush();
+      t.socket().reply(t.socket().last('browser.grant.revoke'));
+      await expect(pending).resolves.toEqual({ ok: false, code: 'tab_changed' });
+      expect(t.session.state().shares).toEqual([]);
+    });
+
     it('refuses a tab that left its origin while the grant was created', async () => {
       await fakeBrowser.storage.local.set({ [policyKey(cloud.id)]: { accepted_at: NOW } });
       const t = setup();
@@ -244,7 +337,8 @@ describe('BrowserSession on Dewee Cloud', () => {
       t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
       await flush();
       t.tabs.set(TAB, { url: 'https://elsewhere.example.test/', status: 'complete', active: true });
-      t.socket().reply(t.socket().last('browser.grant.create'), { grant: grant({ tab: 't1' }) });
+      const create = t.socket().last('browser.grant.create');
+      t.socket().reply(create, { grant: grant({ tab: create.params.tab as string }) });
       await expect(pending).resolves.toEqual({ ok: false, code: 'tab_changed' });
       expect(t.socket().methods()).toContain('browser.grant.revoke');
       expect(t.session.state().shares).toEqual([]);

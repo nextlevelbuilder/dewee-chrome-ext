@@ -555,3 +555,40 @@ describe('Executor: tabs', () => {
     await expect(t.run(command('snapshot', { tab: 't1' })).promise).rejects.toMatchObject({ code: 'tab_closed' });
   });
 });
+
+describe('Executor: shared-tab grant', () => {
+  const SHARED = 's_AAAAAAAAAAAAAAAAAAAAAA';
+  function sharedSetup(url = `${ORIGIN}/cart`) {
+    const t = setup({ grant: grant({ tab: SHARED }) });
+    t.browserTabs.set(7, { id: 7, url, title: 'Cart', status: 'complete', active: true });
+    t.tabs.add(7, GRANT_ID, AGENT_ID, { handle: SHARED, shared: true });
+    return t;
+  }
+
+  it('runs on the shared tab while it shows the granted origin', async () => {
+    const t = sharedSetup();
+    await expect(t.run(command('snapshot', { tab: SHARED }, { grant_tab: SHARED, grant_origin: ORIGIN })).promise).resolves.toMatchObject({ tab: SHARED });
+  });
+
+  it.each([
+    ['snapshot', { tab: SHARED }],
+    ['click', { tab: SHARED, ref: 'e1', generation: 1 }],
+    ['scroll', { tab: SHARED, direction: 'down' }],
+    ['press', { tab: SHARED, key: 'Tab' }],
+  ] as const)('refuses %s once the shared tab shows another origin, before touching the page', async (action, params) => {
+    const t = sharedSetup('https://elsewhere.example.test/');
+    await expect(t.run(command(action as 'snapshot', params as never, { grant_tab: SHARED })).promise).rejects.toMatchObject({ code: 'origin_not_allowed' });
+    expect(t.pageCalls).toEqual([]);
+  });
+
+  it('refuses a grant_origin that is not the grant origin', async () => {
+    const t = sharedSetup();
+    await expect(t.run(command('snapshot', { tab: SHARED }, { grant_tab: SHARED, grant_origin: 'https://elsewhere.example.test' })).promise).rejects.toMatchObject({ code: 'origin_not_allowed' });
+  });
+
+  it('lists only the shared tab for `tabs`, without a tab param', async () => {
+    const t = sharedSetup();
+    t.browserTabs.set(9, { id: 9, url: `${ORIGIN}/other`, title: 'Other', status: 'complete', active: false });
+    await expect(t.run(command('tabs', {}, { grant_tab: SHARED })).promise).resolves.toEqual({ tabs: [{ tab: SHARED, url: `${ORIGIN}/cart`, title: 'Cart', active: true }] });
+  });
+});

@@ -45,9 +45,19 @@ export class TabRegistry {
     return tab;
   }
 
-  /** A fresh handle, never handed out before (a shared-tab grant names its handle before the tab is added). */
+  /** A fresh counter handle (`t1`, `t2`...) for a tab an agent opens. */
   reserveHandle(): string {
     return `t${this.next++}`;
+  }
+
+  /**
+   * A shared tab's handle: 128 random bits, not derived from the Chrome tab id or a counter, so it
+   * cannot be guessed and is never reused.
+   */
+  sharedHandle(): string {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const encoded = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `s_${encoded}`;
   }
 
   get(handle: string): OwnedTab | undefined {
