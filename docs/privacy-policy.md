@@ -20,7 +20,7 @@ share your data.
 | Chat messages you send and agent replies | When you chat | Your Dewee server | Not stored by the extension; history is loaded from the server |
 | Values you type into a credential card (for example an API key an agent asks for) | When you submit the card | Only that card's answer endpoint on your Dewee server | Not stored; kept only in the form until it is sent |
 | Text you select on a page, with that page's title and address ("Ask Dewee", off by default) | Only when you press Ask Dewee and then Send | Your Dewee server, as a chat message | A draft in `chrome.storage.session` until you send or discard it |
-| Page content of tabs an agent operates ("connected browser", off by default) | Only for tabs the agent opened, on sites you granted, while the grant is valid | Your Dewee server, so the agent can read and act on the page | Device id, grants and pause state in `chrome.storage.local`; tab list in `chrome.storage.session` |
+| Page content of tabs an agent operates ("connected browser", off by default) | Only for tabs the agent opened on sites you granted, or the one tab you shared, while the grant is valid | Your Dewee server, so the agent can read and act on the page | Device id, grants and pause state in `chrome.storage.local`; tab list in `chrome.storage.session` |
 
 The connected browser never reads your other tabs. Password, payment and one-time-code field values are never read
 out, and the agent cannot type into those fields. Actions that look like submit, publish, delete or payment ask you
@@ -32,7 +32,8 @@ first. You can pause, stop or revoke access in the side panel at any time.
 - `storage`: keeps the settings and data listed above.
 - `identity`: opens the Dewee Cloud sign-in page.
 - `alarms`: refreshes the pending-request badge and sign-in tokens in the background.
-- `scripting`: runs the extension's own bundled script, only in tabs an approved agent opened on sites you granted, and
+- `activeTab`: lets the side panel see the address of the tab in front when you open Dewee, so it can offer "Let the agent use this tab". Nothing is read until you press it.
+- `scripting`: runs the extension's own bundled script, only in tabs an approved agent opened on sites you granted or the tab you shared, and
   for the optional Ask Dewee button. The extension does not run code it receives from the network.
 - Site access is optional and asked for one site at a time: your Dewee server, the sites you grant to the connected
   browser, and all `https` sites only if you turn on Ask Dewee.

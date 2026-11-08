@@ -121,3 +121,12 @@ describe('contract limits', () => {
     expect(schema.safeParse({ device_id: DEVICE_ID, name: 'Work‮laptop' }).success).toBe(false);
   });
 });
+
+describe('shared-tab grant params', () => {
+  const base = { device_id: '11111111-1111-4111-8111-111111111111', agent_ids: ['33333333-3333-4333-8333-333333333333'], capabilities: ['browser.read', 'browser.control'] as const };
+  it('allow one origin for at most an hour', () => {
+    expect(methodParamsSchemas['browser.grant.create'].safeParse({ ...base, origins: ['https://a.example'], ttl_seconds: 3600, tab: 't1' }).success).toBe(true);
+    expect(methodParamsSchemas['browser.grant.create'].safeParse({ ...base, origins: ['https://a.example'], ttl_seconds: 3601, tab: 't1' }).success).toBe(false);
+    expect(methodParamsSchemas['browser.grant.create'].safeParse({ ...base, origins: ['https://a.example', 'https://b.example'], ttl_seconds: 600, tab: 't1' }).success).toBe(false);
+  });
+});

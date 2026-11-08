@@ -68,6 +68,10 @@ export const TYPE_MAX_CHARS = 10_000;
 export const GRANT_TTL = { min: 60, max: 28_800, default: 3_600 } as const;
 export const GRANT_MAX_ORIGINS = 20;
 export const GRANT_MAX_AGENTS = 20;
+/** A shared-tab grant (one tab the person shared) lasts at most an hour. */
+export const SHARED_TAB_TTL_MAX = 3_600;
+/** Device tab handle as the Gateway accepts it in a shared-tab grant. */
+export const TAB_HANDLE_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
 const tab = z.string().regex(/^t[1-9]\d{0,8}$/);
 const ref = z.string().regex(/^e[1-9]\d{0,8}$/);
@@ -103,6 +107,8 @@ export const commandEnvelopeSchema = z
     params: z.record(z.string(), z.unknown()),
     class: z.enum(['read', 'interact']),
     deadline: z.iso.datetime({ offset: true }),
+    /** Present only when the command runs under a shared-tab grant: the one tab it may touch. */
+    grant_tab: z.string().regex(TAB_HANDLE_PATTERN).optional(),
   })
   .strict();
 export type CommandEnvelope = z.infer<typeof commandEnvelopeSchema>;
@@ -141,6 +147,8 @@ export const grantSchema = z.preprocess(
     expires_at: z.iso.datetime({ offset: true }),
     revoked_at: z.string().nullish(),
     created_at: z.string().nullish(),
+    /** Set on a shared-tab grant: the device tab handle it covers. */
+    tab: z.string().nullish(),
   }),
 );
 export type Grant = z.infer<typeof grantSchema>;
@@ -200,8 +208,11 @@ export const methodParamsSchemas = {
       origins: z.array(exactOrigin).min(1).max(GRANT_MAX_ORIGINS),
       capabilities: z.union([z.tuple([z.literal('browser.read')]), z.tuple([z.literal('browser.read'), z.literal('browser.control')])]),
       ttl_seconds: z.number().int().min(GRANT_TTL.min).max(GRANT_TTL.max),
+      tab: z.string().regex(TAB_HANDLE_PATTERN).optional(),
     })
-    .strict(),
+    .strict()
+    // A shared-tab grant covers exactly one origin for at most an hour.
+    .refine((params) => params.tab === undefined || (params.origins.length === 1 && params.ttl_seconds <= SHARED_TAB_TTL_MAX), 'a shared-tab grant has one origin and lasts at most an hour'),
   'browser.grant.list': z.object({ device_id: uuid }).strict(),
   'browser.grant.revoke': z.object({ grant_id: uuid }).strict(),
   'browser.command.ack': z.object({ command_id: uuid }).strict(),

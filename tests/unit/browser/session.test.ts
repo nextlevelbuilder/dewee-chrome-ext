@@ -75,12 +75,12 @@ describe('BrowserSession', () => {
     expect(t.session.state()).toMatchObject({ mode: 'off', connection: 'offline' });
   });
 
-  it('does not fake the feature for Dewee Cloud', async () => {
+  it('keeps a signed-out Dewee Cloud profile offline', async () => {
     await saveSettings(settings(cloud.id));
     const t = setup();
     await t.session.sync();
     expect(t.sockets).toHaveLength(0);
-    expect(t.session.state().mode).toBe('cloud');
+    expect(t.session.state()).toMatchObject({ mode: 'signed_out', kind: 'cloud' });
   });
 
   it('needs an API key credential', async () => {

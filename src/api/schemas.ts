@@ -121,3 +121,32 @@ export const tokenResponse = z.object({
   scope: z.string().optional(),
 });
 export type TokenResponse = z.infer<typeof tokenResponse>;
+
+// ---------- Connected browser (Cloud BFF) ----------
+
+/** `GET /browser/status`: whether the workspace has browser use on, and whether the caller may turn it on (owner/admin). */
+export const browserStatusResponse = z.object({ connected: z.boolean(), can_enable: z.boolean() });
+export type BrowserWorkspaceStatus = z.infer<typeof browserStatusResponse>;
+export const browserEnableResponse = z.object({ connected: z.boolean() });
+
+/** `ws://` only on loopback, like the self-hosted Gateway origin rule; never credentials in the URL. */
+function isRelaySocketUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || url.hash) return false;
+    return url.protocol === 'wss:' || (url.protocol === 'ws:' && ['localhost', '127.0.0.1'].includes(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `POST /browser/ticket`: a short-lived relay key for the Gateway WebSocket. The key is a secret:
+ * it lives only in the service worker's memory until it is sent in the `connect` frame.
+ */
+export const relayTicketResponse = z.object({
+  key: z.string().min(1).max(4096),
+  expires_at: z.iso.datetime({ offset: true }),
+  ws_url: z.string().max(2048).refine(isRelaySocketUrl, 'wss:// URL (ws:// only on loopback)'),
+});
+export type RelayTicket = z.infer<typeof relayTicketResponse>;

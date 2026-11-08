@@ -189,7 +189,7 @@ Tool-issued cards expire after one hour. The Gateway re-checks the agent's curre
 
 ## Connected browser relay (WebSocket)
 
-Self-hosted only, and only while the person turns on "Connected browser" in Settings. The service worker opens `wss://<gateway-origin>/ws` (`ws://` for loopback) and authenticates with the profile's personal API key in the `connect` frame; the gateway master token is never used. The full frame, method, action and error contract is [connected-browser-relay-contract.md](connected-browser-relay-contract.md); the Zod schemas that enforce it are in `src/browser/protocol.ts`.
+Only while the person turns on "Connected browser" (Settings, or *Turn on browser use* in the panel on Dewee Cloud). Self-hosted: the service worker opens `wss://<gateway-origin>/ws` (`ws://` for loopback) and authenticates with the profile's personal API key in the `connect` frame; the gateway master token is never used. Dewee Cloud: see [Cloud browser routes](#cloud-browser-routes) for the relay ticket the worker connects with. The full frame, method, action and error contract is [connected-browser-relay-contract.md](connected-browser-relay-contract.md); the Zod schemas that enforce it are in `src/browser/protocol.ts`.
 
 What the extension adds on its side of the contract:
 
@@ -202,7 +202,19 @@ What the extension adds on its side of the contract:
 - A command whose grant is revoked while it runs, or that arrives for a revoked grant, fails with `grant_revoked`. Page results (`open`, `navigate`, `snapshot`, `click`, `type`, `screenshot`) always carry the page `url`; a result without a valid one is reported as `internal`, or as `outcome_unknown` after an interaction (the action may have run). A refresh (`attach`, `browser.grant.list`) that no longer lists a grant cancels its in-flight commands, approvals included, with `grant_revoked`.
 - The person's last Pause/Stop/Resume is kept per profile and device in `storage.local` and re-sent after every `attach` (`browser.control.state`), so a Chrome restart, a profile switch or a Gateway restart cannot lift a Pause. `active` is re-sent only when the person's last choice was Resume; with no stored choice nothing is sent and the Gateway keeps its state. A stored choice that cannot be read leaves the panel paused locally and sends nothing (see [browser-control-threat-model.md](browser-control-threat-model.md)).
 - The panel explains Gateway refusals: `FAILED_PRECONDITION` (connected browsing off for the workspace; the reconnect backoff keeps retrying), `NOT_FOUND` on `grant.create` (the device was removed elsewhere; it is forgotten so the person can register again), `UNAUTHORIZED` on `grant.create` (only the person's own agents and the default agent can be allowed, or the API key lacks the permission). Device names with control or format characters, line or paragraph separators (U+2028/U+2029), or over 100 UTF-8 bytes, and origins with a trailing dot, a host over 253 characters or a non-punycode host, are refused before anything is sent.
-- Dewee Cloud: not available yet; the panel says so and no socket is opened.
+- Shared-tab grants: `browser.grant.create` with `tab` (the local handle), one origin, `ttl_seconds` 3600, read and act, for the agent of the current chat. Commands under it carry `grant_tab`; the extension refuses (`tab_not_owned`) a command whose `grant_tab` differs from its grant's `tab`, any other tab, `open` and `close`. The share ends locally and is revoked on the Gateway on Stop, tab close, navigation to another origin (a URL Chrome hides counts), expiry, Stop of the device, sign-out and profile switch.
+
+### Cloud browser routes
+
+Behind the `/api/extension/v1` guard chain, for the workspace the side panel chats in (the remembered selection):
+
+| Route | Result | Errors |
+|---|---|---|
+| `GET /workspaces/{id}/browser/status` (scope `workspaces`) | `{connected, can_enable}` | |
+| `POST /workspaces/{id}/browser/enable` `{}` (scope `browser`) | `{connected:true}` | 403 `admin_required` for members |
+| `POST /workspaces/{id}/browser/ticket` `{}` (scope `browser`, chat.use) | `{key, expires_at, ws_url}` | 409 `browser_disabled`, 403 (no chat.use), 503 `runtime_unavailable` (retried) |
+
+The ticket is fetched by the service worker before every socket and again a minute before `expires_at`; `ws_url` must be `wss://` (`ws://` only on loopback). The key is sent only as `token` in the `connect` frame and is never stored, put in panel state or logged. The extension requests the `browser` OAuth scope at sign-in; a session without it is asked to sign in again from the browser-use step. Policy acceptance is per person and kept in `storage.local` (`browserPolicy:<profile>`, not a secret).
 
 ## Backend status
 

@@ -13,6 +13,7 @@ import type { BackgroundResponse, BrowserRequest } from '@/protocol/messages';
 import { errorText, useI18n } from '@/shared/i18n';
 import { IconClose } from '@/shared/icons';
 import { ApprovalCards, ControlButtons, controlNotice, formatTime } from './BrowserActivity';
+import { CloudTurnOn, PolicyScreen, SharedTabs, ShareTab, SignInAgain, WorkspaceGate } from './CloudBrowser';
 import { GrantForm } from './GrantForm';
 
 type Call = (request: BrowserRequest) => Promise<BackgroundResponse>;
@@ -301,7 +302,34 @@ function Timeline({ timeline }: { timeline: PanelState['timeline'] }) {
   );
 }
 
-export function BrowserControlDrawer({ state, agents, call, onClose }: { state: PanelState; agents: Agent[]; call: Call; onClose(): void }) {
+interface DrawerProps {
+  /** Null while browser use is off for a Cloud profile (the drawer then offers the switch). */
+  state: PanelState | null;
+  agents: Agent[];
+  /** The agent of the current chat: the one a shared tab is shared with. */
+  agent?: Agent;
+  profileId: string;
+  call: Call;
+  onClose(): void;
+  onTurnOn?(): void;
+  onTurnOff?(): void;
+}
+
+/** Cloud errors that stop the relay until the person (or an admin) does something. */
+function CloudBlocker({ error, profileId, call }: { error: string | undefined; profileId: string; call: Call }) {
+  const { t } = useI18n();
+  if (error === 'browser_disabled') return <WorkspaceGate call={call} />;
+  if (error === 'browser_scope_required') return <SignInAgain profileId={profileId} />;
+  if (error === 'browser_forbidden' || error === 'workspace_required' || error === 'admin_required')
+    return (
+      <p className="notice notice-error" role="alert">
+        {errorText(t, error)}
+      </p>
+    );
+  return null;
+}
+
+export function BrowserControlDrawer({ state, agents, agent, profileId, call, onClose, onTurnOn, onTurnOff }: DrawerProps) {
   const { t } = useI18n();
   const panelRef = useRef<HTMLElement>(null);
 
@@ -309,7 +337,8 @@ export function BrowserControlDrawer({ state, agents, call, onClose }: { state: 
     panelRef.current?.querySelector<HTMLElement>('.browser-panel-head button')?.focus();
   }, []);
 
-  const status = t(`browser.status.${state.connection}`);
+  const status = state ? t(`browser.status.${state.connection}`) : '';
+  const cloud = state?.kind === 'cloud';
   return (
     <section ref={panelRef} className="browser-panel" aria-labelledby="browser-panel-title">
       <div className="session-list-head browser-panel-head">
@@ -321,7 +350,11 @@ export function BrowserControlDrawer({ state, agents, call, onClose }: { state: 
         </button>
       </div>
       <div className="browser-scroll">
-        {state.mode === 'ready' ? (
+        {!state ? (
+          onTurnOn ? <CloudTurnOn onTurnOn={onTurnOn} /> : null
+        ) : cloud && state.mode === 'policy' ? (
+          <PolicyScreen call={call} onTurnOff={onTurnOff} />
+        ) : state.mode === 'ready' ? (
           <>
             <div className="browser-row">
               <span className={`status-pill browser-status browser-status-${state.connection}`} role="status" data-testid="browser-status">
@@ -335,6 +368,7 @@ export function BrowserControlDrawer({ state, agents, call, onClose }: { state: 
                 {t('browser.refused')}
               </p>
             ) : null}
+            {cloud ? <CloudBlocker error={state.error} profileId={profileId} call={call} /> : null}
             {state.error === 'failed_precondition' ? (
               <p className="notice notice-warn" role="alert">
                 {t('error.failed_precondition')}
@@ -346,9 +380,22 @@ export function BrowserControlDrawer({ state, agents, call, onClose }: { state: 
               </p>
             ) : null}
             <ApprovalCards approvals={state.approvals} call={call} />
+            <SharedTabs shares={state.shares} call={call} />
             <AgentTabs tabs={state.tabs} />
             <Timeline timeline={state.timeline} />
-            {state.connection === 'connected' ? (
+            {state.connection === 'connected' && cloud ? (
+              <>
+                <ShareTab state={state} agent={agent} call={call} />
+                {state.device ? <DeviceSection device={state.device} call={call} /> : null}
+                {state.device ? <GrantList grants={state.grants} agents={agents} call={call} /> : null}
+              </>
+            ) : null}
+            {cloud && onTurnOff ? (
+              <button type="button" className="link small" onClick={onTurnOff}>
+                {t('browser.cloud.turnOff')}
+              </button>
+            ) : null}
+            {state.connection === 'connected' && !cloud ? (
               <>
                 <DeviceSection device={state.device} call={call} />
                 {state.device ? (
@@ -363,8 +410,8 @@ export function BrowserControlDrawer({ state, agents, call, onClose }: { state: 
           </>
         ) : (
           <div className="stack">
-            <p className="notice">{t(`browser.mode.${state.mode}`)}</p>
-            {state.mode !== 'cloud' ? (
+            <p className="notice">{cloud && state.mode === 'signed_out' ? t('browser.mode.signedOutCloud') : t(`browser.mode.${state.mode}`)}</p>
+            {!cloud ? (
               <button type="button" className="btn" onClick={() => void browser.runtime.openOptionsPage()}>
                 {t('browser.openSettings')}
               </button>
