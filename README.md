@@ -24,16 +24,6 @@ Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked** 
 - **Dewee Cloud:** choose *Dewee Cloud* and *Sign in*. You approve access on Dewee, then return to the panel.
 - **Self-hosted:** choose *Self-hosted*, enter your Gateway URL (HTTPS, or `http://localhost` for development) and a personal API key created in Dewee. The Gateway operator must allow the extension origin in `GOCLAW_ALLOWED_ORIGINS` (exact match): `chrome-extension://fckahaihlmpbcldmlopffgmocflpnjha` for the Chrome Web Store install, `chrome-extension://poicgajeapmbcilfbeobdfedibiffbbm` for an unpacked or sideloaded build. Never use the gateway master token.
 
-### Connected browser (self-hosted only)
-
-Agents can drive tabs they open in this browser once all of these are true:
-
-1. A workspace admin opens **Built-in Tools → Browser → Settings** in the Dewee web console and saves `{"connected": true}`. Until then agents get `connected browsing is not enabled for this workspace`.
-2. This profile is *Self-hosted* with a personal API key that has `operator.write`. Dewee Cloud does not relay browser control yet.
-3. Turn on **Settings → Connected browser**. In the side panel's **Browser control** drawer, choose **Register this browser**, then **Allow an agent to use this browser**: pick the agent, exact sites (for example `https://github.com`), *Read only* or *Read and act*, and a duration. Chrome asks for access to each site.
-
-The agent uses your existing sign-ins in this Chrome; it never reads passwords, payment or one-time-code fields. See [docs/browser-control-threat-model.md](docs/browser-control-threat-model.md).
-
 By default the credential is kept only until Chrome closes. Tick *Remember on this device* to keep it on disk.
 
 ## Keyboard shortcuts
