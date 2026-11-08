@@ -3,7 +3,7 @@ import type { BrowserApi, TabInfo } from '@/browser/chrome-api';
 import { Executor, type ExecutionContext } from '@/browser/executor';
 import { LocalGuard, type ControlState } from '@/browser/policy';
 import type { DriverRequest, DriverResponse } from '@/browser/adapters/page-driver';
-import type { BrowserCommand, Grant } from '@/browser/protocol';
+import { actionParamsSchemas, type BrowserCommand, type Grant } from '@/browser/protocol';
 import { TabRegistry } from '@/browser/tabs';
 
 type PageRequest = DriverRequest;
@@ -590,5 +590,12 @@ describe('Executor: shared-tab grant', () => {
     const t = sharedSetup();
     t.browserTabs.set(9, { id: 9, url: `${ORIGIN}/other`, title: 'Other', status: 'complete', active: false });
     await expect(t.run(command('tabs', {}, { grant_tab: SHARED })).promise).resolves.toEqual({ tabs: [{ tab: SHARED, url: `${ORIGIN}/cart`, title: 'Cart', active: true }] });
+  });
+
+  it('accepts `tabs` naming the shared tab, as the Gateway sends it, and refuses another tab', async () => {
+    expect(actionParamsSchemas.tabs.safeParse({ tab: SHARED }).success).toBe(true);
+    const t = sharedSetup();
+    await expect(t.run(command('tabs', { tab: SHARED }, { grant_tab: SHARED })).promise).resolves.toEqual({ tabs: [{ tab: SHARED, url: `${ORIGIN}/cart`, title: 'Cart', active: true }] });
+    await expect(t.run(command('tabs', { tab: 't1' }, { grant_tab: SHARED })).promise).rejects.toMatchObject({ code: 'tab_not_owned' });
   });
 });

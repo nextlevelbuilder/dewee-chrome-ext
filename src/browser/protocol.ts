@@ -82,7 +82,8 @@ const generation = z.number().int().nonnegative();
 const url = z.string().min(1).max(4096);
 
 export const actionParamsSchemas = {
-  tabs: z.object({}).strict(),
+  // Under a shared-tab grant the Gateway names the shared tab here; the guard checks it equals grant_tab.
+  tabs: z.object({ tab: tab.optional() }).strict(),
   open: z.object({ url }).strict(),
   navigate: z.object({ tab, url }).strict(),
   snapshot: z.object({ tab, max_chars: z.number().int().min(1).max(SNAPSHOT_MAX_CHARS).optional() }).strict(),
