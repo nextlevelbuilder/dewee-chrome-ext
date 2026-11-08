@@ -109,6 +109,7 @@ export class Executor {
 
   async execute(command: BrowserCommand, signal: AbortSignal, context: ExecutionContext): Promise<ActionResult[BrowserCommand['action']]> {
     const grant = this.recheck(command, signal);
+    await this.checkSharedOrigin(command, grant);
     const activity: Activity = { commandId: command.command_id, grantId: command.grant_id, agentName: command.agent_name ?? '', channel: command.channel ?? '', domain: '', action: command.action };
     this.deps.onActivity(activity, true);
     try {
@@ -124,6 +125,21 @@ export class Executor {
     const grant = this.deps.grant(command.grant_id);
     ensure(this.deps.guard.checkGrant(command, grant, this.deps.control(), this.deps.screenshots?.() ?? false));
     return grant as Grant;
+  }
+
+  /**
+   * Under a shared-tab grant nothing runs unless the shared tab shows the granted origin right now
+   * (and the Gateway's `grant_origin`, when sent, names the same one). The Gateway's own check of
+   * the result is not relied on.
+   */
+  private async checkSharedOrigin(command: BrowserCommand, grant: Grant): Promise<void> {
+    if (!grant.tab) return;
+    const granted = grant.origins[0];
+    if (grant.origins.length !== 1 || (command.grant_origin !== undefined && command.grant_origin !== granted)) throw new CommandError('origin_not_allowed', 'The command names another origin than its shared tab');
+    const tab = this.deps.tabs.get(grant.tab);
+    if (!tab || !tab.shared || tab.closed || tab.grantId !== grant.grant_id) throw new CommandError('tab_not_owned', 'The shared tab is gone');
+    const url = (await this.deps.api.getTab(tab.tabId))?.url;
+    if (!url || isRestrictedUrl(url) || urlOrigin(url) !== granted) throw new CommandError('origin_not_allowed', 'The shared tab shows another site');
   }
 
   private remaining(command: BrowserCommand, cap: number): number {

@@ -11,6 +11,7 @@ import { FakeSocket, flush } from './fake-socket';
 const gw: Profile = { id: 'p_gw', name: 'Gateway', kind: 'gateway', origin: 'https://gw.example.test', remember: false };
 const gw2: Profile = { id: 'p_gw2', name: 'Other', kind: 'gateway', origin: 'https://other-gw.example.test', remember: false };
 const cloud: Profile = { id: 'p_cloud', name: 'Cloud', kind: 'cloud', origin: 'https://app.example.test', remember: false };
+const LEGACY_ATTACH_REJECTION = 'params must be an object with only the documented fields: json: unknown field "shared_tab_contract"';
 
 function settings(activeProfileId: string, connectedBrowser = true): Settings {
   const base = defaultSettings();
@@ -75,12 +76,12 @@ describe('BrowserSession', () => {
     expect(t.session.state()).toMatchObject({ mode: 'off', connection: 'offline' });
   });
 
-  it('does not fake the feature for Dewee Cloud', async () => {
+  it('keeps a signed-out Dewee Cloud profile offline', async () => {
     await saveSettings(settings(cloud.id));
     const t = setup();
     await t.session.sync();
     expect(t.sockets).toHaveLength(0);
-    expect(t.session.state().mode).toBe('cloud');
+    expect(t.session.state()).toMatchObject({ mode: 'signed_out', kind: 'cloud' });
   });
 
   it('needs an API key credential', async () => {
@@ -132,10 +133,70 @@ describe('BrowserSession', () => {
       expect(t.sockets).toHaveLength(2);
       await t.connect();
       expect(t.socket().methods()).toEqual(['connect', 'browser.device.attach']);
-      expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'] });
+      expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'], shared_tab_contract: 1 });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('retries one self-hosted attach without the shared-tab field only for the exact legacy rejection', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    const first = t.socket().last('browser.device.attach');
+    expect(first.params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'], shared_tab_contract: 1 });
+
+    t.socket().refuse(first, 'INVALID_REQUEST', LEGACY_ATTACH_REJECTION);
+    await flush();
+    const attaches = t.socket().sent.filter((frame) => frame.method === 'browser.device.attach');
+    expect(attaches).toHaveLength(2);
+    expect(attaches[1]?.params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'] });
+    t.socket().reply(attaches[1]!, { device_id: DEVICE_ID, grants: [] });
+    await flush();
+    expect(t.session.state().connection).toBe('connected');
+  });
+
+  it('does not retry another invalid self-hosted attach request', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().refuse(t.socket().last('browser.device.attach'), 'INVALID_REQUEST', 'params must be an object with only the documented fields: json: unknown field "future_field"');
+    await flush();
+    expect(t.socket().sent.filter((frame) => frame.method === 'browser.device.attach')).toHaveLength(1);
+    expect(t.socket().closed).toBe(true);
+  });
+
+  it('does not retry a timed-out self-hosted attach request', async () => {
+    vi.useFakeTimers();
+    try {
+      await enrolledHere();
+      await saveSettings(settings(gw.id));
+      const t = setup();
+      await t.session.sync();
+      await t.connect();
+      vi.advanceTimersByTime(15_000);
+      await flush();
+      expect(t.socket().sent.filter((frame) => frame.method === 'browser.device.attach')).toHaveLength(1);
+      expect(t.socket().closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry a self-hosted attach with a malformed response', async () => {
+    await enrolledHere();
+    await saveSettings(settings(gw.id));
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: 'not-a-uuid', grants: [] });
+    await flush();
+    expect(t.socket().sent.filter((frame) => frame.method === 'browser.device.attach')).toHaveLength(1);
+    expect(t.socket().closed).toBe(true);
   });
 
   it('says when the workspace has connected browsing off and attaches once it is turned on', async () => {

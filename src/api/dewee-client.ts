@@ -11,13 +11,18 @@ import {
   abortResponse,
   actionsResponse,
   agentsResponse,
+  browserEnableResponse,
+  browserStatusResponse,
   historyResponse,
   meResponse,
+  relayTicketResponse,
   respondResponse,
   sessionsResponse,
   statusResponse,
   workspacesResponse,
+  type BrowserWorkspaceStatus,
   type History,
+  type RelayTicket,
   type RespondResult,
   type RunStatus,
 } from './schemas';
@@ -116,6 +121,21 @@ export class DeweeClient {
    */
   respond(workspaceId: string, actionId: string, body: RespondBody): Promise<RespondResult> {
     return this.json('POST', `${ws(workspaceId)}/actions/${encodeURIComponent(actionId)}/respond`, respondResponse, body);
+  }
+
+  /** Cloud only: browser use in a workspace (needs the `workspaces` scope). */
+  browserStatus(workspaceId: string): Promise<BrowserWorkspaceStatus> {
+    return this.json('GET', `${ws(workspaceId)}/browser/status`, browserStatusResponse);
+  }
+
+  /** Cloud only: an owner/admin turns browser use on for the workspace (`admin_required` for members). */
+  async browserEnable(workspaceId: string): Promise<boolean> {
+    return (await this.json('POST', `${ws(workspaceId)}/browser/enable`, browserEnableResponse, {})).connected;
+  }
+
+  /** Cloud only: a fresh relay ticket (`browser` scope and chat.use; never cached; `browser_disabled` while the workspace has it off). */
+  browserTicket(workspaceId: string): Promise<RelayTicket> {
+    return this.json('POST', `${ws(workspaceId)}/browser/ticket`, relayTicketResponse, {});
   }
 
   /** Streams one chat turn. Ends after a terminal event, a stall, or when `signal` aborts. */

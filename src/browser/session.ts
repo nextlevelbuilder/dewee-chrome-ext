@@ -1,13 +1,23 @@
 /**
- * Connected browser session in the service worker: one relay connection for the active
- * self-hosted profile, while the "Connected browser" preference is on and the profile holds an
- * API key. A profile switch, sign-out or turning the preference off closes the socket, cancels
- * running commands and forgets grants and owned tabs, so nothing carries over to another profile.
+ * Connected browser session in the service worker: one relay connection for the active profile
+ * while the "Connected browser" preference is on. A self-hosted profile connects with its personal
+ * API key. A Dewee Cloud profile connects once the person signed in and accepted the browser-use
+ * policy, with a short-lived relay ticket from the Cloud BFF: the ticket key lives only in this
+ * worker's memory until the `connect` frame, and a fresh ticket is fetched before it expires and on
+ * every reconnect. A profile switch, sign-out or turning the preference off revokes the tabs the
+ * person shared, closes the socket, cancels running commands and forgets grants and owned tabs, so
+ * nothing carries over to another profile.
+ *
+ * Shared tabs: the person can share the tab they have open with one agent (a shared-tab grant: that
+   * tab, its one origin, at most an hour). The share ends here immediately when the tab closes,
+   * leaves that origin, the grant expires, or the person presses Stop; attach reconciles any
+   * uncertain Gateway revoke from its authoritative active-grant set before admitting commands.
  *
  * Kept in storage: the server-generated device id and name per profile, the ids of grants the
- * person created here and the person's last Pause/Stop/Resume (`storage.local`, not secrets), and,
+   * person created here, the person's last Pause/Stop/Resume and, for Cloud, when the person accepted
+   * the browser-use policy (`storage.local`, not secrets), and,
  * for a worker restart, the owned-tab handles and the debugger opt-in (`storage.session`). Never
- * kept: page content, snapshots, screenshots, typed text, the API key.
+ * kept: page content, snapshots, screenshots, typed text, the API key, the Cloud relay ticket.
  *
  * In the Advanced build the session also owns the debugger opt-in: it answers the CDP adapter's
  * policy check before every debugger command and detaches on Pause, Stop, revoke, expiry,
@@ -20,6 +30,7 @@
 import { browser } from 'wxt/browser';
 import { z } from 'zod';
 import { isApiError } from '@/api/errors';
+import type { RelayTicket } from '@/api/schemas';
 import { readCredential } from '@/auth/credential-store';
 import { apiKeyFor } from '@/background/token-manager';
 import type { BackgroundResponse, BrowserRequest } from '@/protocol/messages';
@@ -30,13 +41,14 @@ import { createCdpAdapter, type CdpAdapterOptions } from './adapters/cdp';
 import type { DriverErrorCode } from './adapters/page-driver';
 import { ApprovalBroker } from './approvals';
 import { chromeBrowserApi, type BrowserApi } from './chrome-api';
+import { cloudRelayApi, type CloudRelayApi } from './cloud-relay';
 import { CommandRunner } from './command-runner';
 import { deviceNameFor, platformOs } from './device-name';
 import { EngineRouter, type AdvancedEngine, type DebuggerPrefs } from './engine-router';
 import { Executor, type Activity } from './executor';
 import type { CheckPhase } from './adapters/cdp/cdp-client';
 import { grantExpired, isRestrictedUrl, LocalGuard, urlOrigin, type ControlState } from './policy';
-import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, isValidDeviceName, RELAY_EVENTS, type EventFrame, type Grant } from './protocol';
+import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, isValidDeviceName, RELAY_EVENTS, SHARED_TAB_TTL_MAX, type EventFrame, type Grant } from './protocol';
 import { BROWSER_PORT, type PanelState } from './panel-state';
 import { prefersVietnamese, TabMarker, type ActionApi } from './tab-marker';
 import { TabRegistry } from './tabs';
@@ -50,18 +62,34 @@ export const tabsKey = (profileId: string) => `browserTabs:${profileId}`;
 export const grantsKey = (profileId: string) => `browserGrants:${profileId}`;
 /** The person's debugger choice (Advanced build). `storage.session`: it ends with the browser session. */
 export const debuggerKey = (profileId: string) => `browserDebugger:${profileId}`;
+/** Cloud: when the person accepted the browser-use policy on this profile (not secret). */
+export const policyKey = (profileId: string) => `browserPolicy:${profileId}`;
+/** Cloud: fetch a fresh relay ticket this long before the current one expires. */
+export const TICKET_RENEW_MARGIN_MS = 60_000;
+/** Cloud: a running command may delay the ticket renewal until this long before expiry. */
+const TICKET_LAST_CALL_MS = 10_000;
+const TICKET_BUSY_RETRY_MS = 5_000;
+/** Never renew sooner than this after a ticket arrived (clock skew, very short tickets), nor retry a failed renewal sooner. */
+export const TICKET_MIN_RENEW_MS = 30_000;
+/** How long a sign-out or profile switch waits for the Gateway to confirm shared tabs were revoked. */
+const SHARE_REVOKE_WAIT_MS = 2_000;
+/** Transport stop codes that a retry cannot fix: wait for a new credential. */
+const REFUSED_CODES = new Set(['permission_denied', 'unauthenticated', 'browser_forbidden', 'admin_required', 'browser_scope_required']);
 const OWN_GRANTS_MAX = 200;
 const TIMELINE_MAX = 20;
 /** Longest single wait of the grant-expiry timer; it re-arms after. */
 const EXPIRY_TIMER_MAX_MS = 60 * 60_000;
 /** The Gateway's answer (lowercased) while the workspace has connected browsing turned off. */
 export const FEATURE_DISABLED = 'failed_precondition';
+const LEGACY_ATTACH_REJECTION = 'params must be an object with only the documented fields: json: unknown field "shared_tab_contract"';
 
 const deviceRecord = z.object({ device_id: z.uuid(), name: z.string() });
 const ownGrantsRecord = z.array(z.string().min(1)).max(OWN_GRANTS_MAX);
 /** The person's last Pause/Stop/Resume for the device (not secret). */
 const controlRecord = z.object({ device_id: z.uuid().nullable(), state: z.enum(['active', 'paused', 'stopped']) }).strict();
 const debuggerRecord = z.object({ enabled: z.boolean(), fallback: z.boolean() }).strict();
+const policyRecord = z.object({ accepted_at: z.number() });
+const agentId = z.uuid();
 
 export interface SessionDeps {
   api?: BrowserApi;
@@ -71,6 +99,8 @@ export interface SessionDeps {
   action?: ActionApi | null;
   createSocket?: SocketFactory;
   token?(profileId: string): Promise<string>;
+  /** Dewee Cloud BFF calls (relay ticket, workspace switch). */
+  cloud?: CloudRelayApi;
   random?(): number;
   now?(): number;
 }
@@ -106,14 +136,58 @@ function errorCode(error: unknown): string {
   return 'internal_error';
 }
 
+function revokeIsSettled(error: unknown): boolean {
+  return error instanceof RelayError && error.code.toLowerCase() === 'not_found';
+}
+
 /** Same members, ignoring order (the lists hold no repeats). */
 const sameSet = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((item) => b.includes(item));
 
 const tabOf = (params: object): string | undefined => ('tab' in params && typeof params.tab === 'string' ? params.tab : undefined);
 
+/** A failed ticket request as a transport error: fatal when only a new credential or an admin can fix it. */
+function ticketError(error: unknown): RelayError {
+  if (isApiError(error)) {
+    if (['browser_disabled', 'admin_required', 'browser_scope_required', 'workspace_required'].includes(error.code)) return new RelayError(error.code, error.message, true);
+    if (error.status === 401) return new RelayError('unauthenticated', error.message, true);
+    // The ticket also needs permission to chat in the workspace.
+    if (error.status === 403) return new RelayError('browser_forbidden', error.message, true);
+    // 503 `runtime_unavailable` (no public relay URL yet), network errors: retried with backoff.
+    return new RelayError(error.code, error.message);
+  }
+  return new RelayError('internal', 'The relay ticket could not be fetched');
+}
+
+function hostOf(origin: string | undefined): string {
+  try {
+    return origin ? new URL(origin).host : '';
+  } catch {
+    return '';
+  }
+}
+
+function withTimeout(task: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    void task.finally(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 export class BrowserSession {
   private profileId: string | null = null;
   private origin: string | null = null;
+  private kind: Profile['kind'] | null = null;
+  /** Cloud: the workspace the side panel chats in; the relay ticket is minted for it. */
+  private workspaceId: string | null = null;
+  /** Cloud: the relay ticket fetched for the next `connect`, cleared as soon as the key is sent. Memory only. */
+  private ticket: { key: string; wsUrl: string } | null = null;
+  private ticketExpiresAt: number | null = null;
+  /** Local time at which to renew, measured from when the ticket arrived. */
+  private ticketRenewAt: number | null = null;
+  private renewTimer: ReturnType<typeof setTimeout> | null = null;
   private epoch = 0;
   private transport: RelayTransport | null = null;
   private mode: PanelState['mode'] = 'off';
@@ -130,6 +204,11 @@ export class BrowserSession {
   private controlChosen = false;
   /** The transport whose socket finished `browser.device.attach` (or has no device to attach). */
   private attachedTransport: RelayTransport | null = null;
+  /** False from the start of attach until every active remote shared grant is reconciled. */
+  private commandAdmission = false;
+  /** Fences overlapping initial/capability attaches; only the newest attempt may install or admit. */
+  private attachGeneration = 0;
+  private debuggerChanges: Promise<void> = Promise.resolve();
   private readonly tabs = new TabRegistry();
   private readonly activities = new Map<string, Activity>();
   /** Activities that just ended, kept until the runner reports their outcome (timeline). */
@@ -140,6 +219,7 @@ export class BrowserSession {
   private pauseReason: PanelState['pauseReason'];
   /** Advanced build: off by default, for this browser session only. */
   private debuggerPrefs: DebuggerPrefs = { enabled: false, fallback: true };
+  private debuggerDesired: DebuggerPrefs = { enabled: false, fallback: true };
   /** Per tab: the origin whose Chrome site permission the last debugger attach confirmed. */
   private readonly cdpPermitted = new Map<number, string>();
   private locale: LocalePref = 'auto';
@@ -235,15 +315,19 @@ export class BrowserSession {
     const settings = await loadSettings();
     this.locale = settings.prefs.locale;
     const profile = activeProfile(settings);
+    this.kind = profile?.kind ?? null;
+    const workspace = profile?.kind === 'cloud' ? (settings.selections[profile.id]?.workspaceId ?? null) : null;
     if (!settings.prefs.connectedBrowser || !profile) this.mode = 'off';
-    else if (profile.kind === 'cloud') this.mode = 'cloud';
-    else this.mode = (await readCredential(profile.id))?.kind === 'api_key' ? 'ready' : 'signed_out';
+    else if (profile.kind === 'cloud') {
+      if ((await readCredential(profile.id))?.kind !== 'oauth') this.mode = 'signed_out';
+      else this.mode = (await this.policyAccepted(profile.id)) ? 'ready' : 'policy';
+    } else this.mode = (await readCredential(profile.id))?.kind === 'api_key' ? 'ready' : 'signed_out';
 
     if (this.mode !== 'ready' || !profile) {
       await this.stop();
-    } else if (this.profileId !== profile.id || this.origin !== profile.origin) {
+    } else if (this.profileId !== profile.id || this.origin !== profile.origin || this.workspaceId !== workspace) {
       await this.stop();
-      await this.start(profile);
+      await this.start(profile, workspace);
     } else if (this.transport && this.transport.currentState === 'stopped' && !this.refused) {
       this.transport.start();
     } else if (this.transport?.isReady && this.device) {
@@ -252,10 +336,11 @@ export class BrowserSession {
     this.broadcast();
   }
 
-  private async start(profile: Profile): Promise<void> {
+  private async start(profile: Profile, workspace: string | null): Promise<void> {
     const epoch = ++this.epoch;
     this.profileId = profile.id;
     this.origin = profile.origin;
+    this.workspaceId = workspace;
     this.refused = false;
     const [local, session, storedControl] = await Promise.all([
       browser.storage.local.get([deviceKey(profile.id), grantsKey(profile.id)]),
@@ -270,15 +355,25 @@ export class BrowserSession {
     this.ownGrants = ownGrantsRecord.safeParse(local[grantsKey(profile.id)]).data ?? [];
     this.restoreControl(storedControl);
     this.tabs.restore(session[tabsKey(profile.id)]);
+    // Shares do not survive a worker restart. Attach returns the authoritative active grants, so
+    // every returned shared grant without a live local match is revoked before commands are admitted.
+    for (const tab of this.tabs.all()) {
+      if (!tab.shared) continue;
+      this.tabs.releaseGrant(tab.grantId);
+      this.ownGrants = this.ownGrants.filter((id) => id !== tab.grantId);
+    }
     const storedDebugger = debuggerRecord.safeParse(session[debuggerKey(profile.id)]).data;
     this.debuggerPrefs = this.router.advancedAvailable && storedDebugger ? storedDebugger : { enabled: false, fallback: true };
+    this.debuggerDesired = this.debuggerPrefs;
     // A worker that restarted may have left the debugger attached to an agent's tab: let it go.
     for (const tab of this.tabs.all()) void this.router.forceDetach(tab.tabId).catch(() => undefined);
     this.markTabs();
     const profileId = profile.id;
+    const cloud = profile.kind === 'cloud';
     const transport: RelayTransport = new RelayTransport({
-      url: relayUrl(profile.origin),
-      token: () => (this.deps.token ?? apiKeyFor)(profileId),
+      url: cloud ? () => this.ticket?.wsUrl ?? '' : relayUrl(profile.origin),
+      token: cloud ? async () => this.takeTicketKey() : () => (this.deps.token ?? apiKeyFor)(profileId),
+      prepare: cloud ? () => this.fetchTicket(profileId, epoch) : undefined,
       version: browser.runtime.getManifest().version,
       onReady: () => this.attach(transport, epoch),
       heartbeat: () => {
@@ -293,13 +388,16 @@ export class BrowserSession {
         this.connection = connectionOf(state);
         if (detail?.code) {
           this.error = detail.code;
-          this.refused = true;
+          // `browser_disabled` is not a refusal: the next sync (alarm, or an admin turning it on) tries again.
+          this.refused = REFUSED_CODES.has(detail.code);
         } else if (state === 'connected') {
           this.error = undefined;
+          this.scheduleRenew(transport);
         }
         // A dropped link stops the commands it carried: their results could not be reported anyway.
         if (state !== 'connected') {
           if (this.attachedTransport === transport) this.attachedTransport = null;
+          this.commandAdmission = false;
           this.runner.cancelAll();
           this.approvals.denyAll();
           void this.router.detachAll();
@@ -313,38 +411,140 @@ export class BrowserSession {
     transport.start();
   }
 
-  /** Closes the connection and forgets everything held for the profile. */
+  private async policyAccepted(profileId: string): Promise<boolean> {
+    const items = await browser.storage.local.get(policyKey(profileId)).catch(() => ({}) as Record<string, unknown>);
+    return policyRecord.safeParse(items[policyKey(profileId)]).success;
+  }
+
+  /** Cloud: a fresh relay ticket before every socket. Kept in memory only, for the `connect` frame. */
+  private async fetchTicket(profileId: string, epoch: number): Promise<void> {
+    // A renewal already fetched the next ticket.
+    if (this.ticket) return;
+    let ticket: RelayTicket;
+    try {
+      ticket = await (this.deps.cloud ?? cloudRelayApi).ticket(profileId);
+    } catch (error) {
+      throw ticketError(error);
+    }
+    if (epoch !== this.epoch) throw new RelayError('cancelled', 'The profile changed');
+    this.storeTicket(ticket);
+  }
+
+  /**
+   * Keeps a ticket for the next `connect`. The renewal time is measured from receipt on the local
+   * clock: the remaining lifetime as the server states it, minus the margin, but never less than half
+   * of it or `TICKET_MIN_RENEW_MS`, so clock skew or a very short ticket cannot cause a reconnect loop.
+   */
+  private storeTicket(ticket: RelayTicket): void {
+    const now = this.now();
+    const expiresAt = Date.parse(ticket.expires_at);
+    const lifetime = Math.max(0, expiresAt - now);
+    this.ticket = { key: ticket.key, wsUrl: ticket.ws_url };
+    this.ticketExpiresAt = expiresAt;
+    this.ticketRenewAt = now + Math.max(TICKET_MIN_RENEW_MS, lifetime / 2, lifetime - TICKET_RENEW_MARGIN_MS);
+  }
+
+  /** The ticket key, once: it is forgotten as soon as it goes into the `connect` frame. */
+  private takeTicketKey(): string {
+    const key = this.ticket?.key;
+    this.ticket = null;
+    if (!key) throw new RelayError('internal', 'No relay ticket');
+    return key;
+  }
+
+  /** Cloud: reconnect with a fresh ticket shortly before the current one expires. */
+  private scheduleRenew(transport: RelayTransport): void {
+    this.clearRenewTimer();
+    if (this.kind !== 'cloud' || this.ticketRenewAt === null) return;
+    const delay = Math.max(TICKET_MIN_RENEW_MS, this.ticketRenewAt - this.now());
+    this.renewTimer = setTimeout(() => void this.renewTicket(transport), delay);
+  }
+
+  /**
+   * Fetches the next ticket first and reconnects only with one that expires later than the current
+   * key; a failed or stale answer keeps the current socket and tries again after `TICKET_MIN_RENEW_MS`.
+   */
+  private async renewTicket(transport: RelayTransport): Promise<void> {
+    this.renewTimer = null;
+    const profileId = this.profileId;
+    if (this.transport !== transport || !profileId) return;
+    const retry = (ms: number) => {
+      if (this.transport === transport) this.renewTimer = setTimeout(() => void this.renewTicket(transport), ms);
+    };
+    // A reconnect cancels running commands: let one finish first while the key still has time left.
+    if (this.runner.size > 0 && this.ticketExpiresAt !== null && this.now() < this.ticketExpiresAt - TICKET_LAST_CALL_MS) {
+      retry(TICKET_BUSY_RETRY_MS);
+      return;
+    }
+    const previous = this.ticketExpiresAt;
+    let ticket: RelayTicket;
+    try {
+      ticket = await (this.deps.cloud ?? cloudRelayApi).ticket(profileId);
+    } catch {
+      retry(TICKET_MIN_RENEW_MS);
+      return;
+    }
+    if (this.transport !== transport) return;
+    if (previous !== null && !(Date.parse(ticket.expires_at) > previous)) {
+      retry(TICKET_MIN_RENEW_MS);
+      return;
+    }
+    this.storeTicket(ticket);
+    transport.renew();
+  }
+
+  private clearRenewTimer(): void {
+    if (this.renewTimer !== null) clearTimeout(this.renewTimer);
+    this.renewTimer = null;
+  }
+
+  /** Fences the old profile locally, then makes a bounded attempt to revoke its shared tabs. */
   private async stop(): Promise<void> {
     const profileId = this.profileId;
     if (!profileId) return;
+    const shared = this.sharedGrantIds();
+    const live = this.transport;
+    const liveReady = live?.isReady ?? false;
+    // The old context loses all local authority before any network wait.
     this.epoch += 1;
-    const transport = this.transport;
+    this.attachGeneration += 1;
+    this.commandAdmission = false;
+    this.attachedTransport = null;
     this.transport = null;
-    this.profileId = this.origin = null;
     this.runner.cancelAll();
     this.approvals.denyAll();
-    transport?.stop();
+    for (const grantId of shared) this.forgetGrantId(grantId);
     for (const tab of this.tabs.all()) void this.router.forget(tab.tabId);
     void this.router.detachAll();
-    this.device = null;
     this.grants.clear();
     this.ownGrants = [];
     this.tabs.clear();
+    this.markTabs();
+    this.broadcast();
+    if (shared.length && live && liveReady) {
+      await withTimeout(Promise.allSettled(shared.map((grantId) => live.request('browser.grant.revoke', { grant_id: grantId }))), SHARE_REVOKE_WAIT_MS);
+    }
+    this.profileId = this.origin = this.workspaceId = null;
+    live?.stop();
+    this.device = null;
     this.activities.clear();
     this.ended.clear();
     this.tabMeta.clear();
     this.timeline = [];
     this.pauseReason = undefined;
     this.debuggerPrefs = { enabled: false, fallback: true };
+    this.debuggerDesired = this.debuggerPrefs;
     this.cdpPermitted.clear();
     this.clearExpiryTimer();
-    this.markTabs();
+    this.clearRenewTimer();
+    this.ticket = null;
+    this.ticketExpiresAt = null;
+    this.ticketRenewAt = null;
     this.connection = 'offline';
     this.error = undefined;
     // The person's Pause/Stop stays in storage.local for when this profile comes back.
     this.control = 'active';
     this.controlChosen = false;
-    this.attachedTransport = null;
     await browser.storage.session.remove([tabsKey(profileId)]).catch(() => undefined);
   }
 
@@ -379,18 +579,24 @@ export class BrowserSession {
     await browser.storage.local.set({ [controlKey(profileId)]: { device_id: this.device?.device_id ?? null, state: this.control } }).catch(() => undefined);
   }
 
-  private async attach(transport: RelayTransport, epoch: number): Promise<void> {
+  private async attach(transport: RelayTransport, epoch: number, generation = ++this.attachGeneration): Promise<void> {
+    this.commandAdmission = false;
     const device = this.device;
     if (!device) {
       this.setGrants([]);
-      if (epoch === this.epoch) this.attachedTransport = transport;
+      if (epoch === this.epoch && this.transport === transport && generation === this.attachGeneration) {
+        this.attachedTransport = transport;
+        this.commandAdmission = true;
+      }
       return;
     }
     try {
-      const attached = await transport.request('browser.device.attach', { device_id: device.device_id, capabilities: this.liveCapabilities() });
-      if (epoch !== this.epoch) return;
-      this.setGrants(attached.grants);
+      const attached = await this.requestDeviceAttach(transport, device.device_id);
+      const reconciled = await this.reconcileAttachedGrants(transport, epoch, attached.grants);
+      if (epoch !== this.epoch || this.transport !== transport || generation !== this.attachGeneration) return;
+      this.setGrants(reconciled);
       this.attachedTransport = transport;
+      this.commandAdmission = true;
       // Re-send the person's own Pause/Stop/Resume: the Gateway may hold an older state, or none
       // after its own restart. Without a stored choice nothing is sent, so `active` never
       // replaces a pause the extension does not know about.
@@ -411,9 +617,50 @@ export class BrowserSession {
     }
   }
 
+  private async requestDeviceAttach(transport: RelayTransport, deviceId: string) {
+    const params = { device_id: deviceId, capabilities: this.liveCapabilities() };
+    try {
+      return await transport.request('browser.device.attach', { ...params, shared_tab_contract: 1 });
+    } catch (error) {
+      if (this.kind !== 'gateway' || !(error instanceof RelayError) || error.code.toLowerCase() !== 'invalid_request' || error.message !== LEGACY_ATTACH_REJECTION) throw error;
+      return transport.request('browser.device.attach', params);
+    }
+  }
+
   /** What the Gateway may ask of this browser right now: `advanced` only while the person has the debugger on. */
   private liveCapabilities() {
     return deviceCapabilities(this.router.advancedAvailable, this.debuggerPrefs.enabled);
+  }
+
+  /** A remote shared grant survives attach only when its exact local tab is still live on its one origin. */
+  private async isLiveLocalShare(grant: Grant): Promise<boolean> {
+    if (!grant.tab || grant.origins.length !== 1 || !isExactOrigin(grant.origins[0]!)) return false;
+    if (!this.ownGrants.includes(grant.grant_id)) return false;
+    const tab = this.tabs.get(grant.tab);
+    if (!tab?.shared || tab.closed || tab.grantId !== grant.grant_id) return false;
+    if (grant.agent_ids.length !== 1 || grant.agent_ids[0] !== tab.agentId) return false;
+    const current = await this.api.getTab(tab.tabId);
+    if (!current?.url || isRestrictedUrl(current.url)) return false;
+    return urlOrigin(current.url) === grant.origins[0];
+  }
+
+  /** Reconciles the Gateway's complete active set before any command from this attach is admitted. */
+  private async reconcileAttachedGrants(transport: RelayTransport, epoch: number, remote: Grant[]): Promise<Grant[]> {
+    const survivors: Grant[] = [];
+    for (const grant of remote) {
+      if (epoch !== this.epoch || this.transport !== transport) throw new RelayError('cancelled', 'The relay context changed');
+      if (!grant.tab || (await this.isLiveLocalShare(grant))) {
+        survivors.push(grant);
+        continue;
+      }
+      try {
+        await transport.request('browser.grant.revoke', { grant_id: grant.grant_id });
+      } catch (error) {
+        if (!revokeIsSettled(error)) throw error;
+      }
+    }
+    if (epoch !== this.epoch || this.transport !== transport) throw new RelayError('cancelled', 'The relay context changed');
+    return survivors;
   }
 
   private async forgetDevice(): Promise<void> {
@@ -426,6 +673,7 @@ export class BrowserSession {
     this.tabs.clear();
     this.persistTabs();
     this.ownGrants = [];
+    this.commandAdmission = false;
     // The choice belonged to the removed device; keep it in memory only (a new device is enrolled
     // from this state and the person still sees it).
     this.controlChosen = false;
@@ -442,8 +690,52 @@ export class BrowserSession {
       device !== null &&
       grant.device_id === device.device_id &&
       grant.origins.length > 0 &&
-      grant.origins.every(isExactOrigin)
+      grant.origins.every(isExactOrigin) &&
+      (!grant.tab || this.sharesTab(grant))
     );
+  }
+
+  /** A shared-tab grant is used only for the tab this browser shared under it, on one origin. */
+  private sharesTab(grant: Grant): boolean {
+    const tab = grant.tab ? this.tabs.get(grant.tab) : undefined;
+    return tab !== undefined && tab.shared === true && !tab.closed && tab.grantId === grant.grant_id && grant.origins.length === 1;
+  }
+
+  private sharedGrantIds(): string[] {
+    return [...this.grants.values()].filter((grant) => grant.tab).map((grant) => grant.grant_id);
+  }
+
+  /** Ends a shared tab here at once; an uncertain live revoke forces attach reconciliation. */
+  private async endShare(grantId: string): Promise<void> {
+    if (!this.grants.has(grantId) && !this.ownGrants.includes(grantId)) return;
+    const transport = this.transport;
+    this.dropGrant(grantId);
+    if (transport?.isReady) await this.revokeEndedShare(transport, grantId);
+  }
+
+  private async revokeEndedShare(transport: RelayTransport, grantId: string): Promise<void> {
+    let settled = false;
+    const attempt = transport.request('browser.grant.revoke', { grant_id: grantId }).then(
+      () => {
+        settled = true;
+      },
+      (error: unknown) => {
+        settled = revokeIsSettled(error);
+      },
+    );
+    await withTimeout(attempt, SHARE_REVOKE_WAIT_MS);
+    if (!settled && this.transport === transport && transport.isReady) transport.renew();
+  }
+
+  /** The shared tab must still show its granted origin; anything else (another site, a hidden URL, gone) ends the share. */
+  private async checkShareOrigin(tabId: number, url?: string): Promise<void> {
+    const tab = this.tabs.byTabId(tabId);
+    if (!tab?.shared) return;
+    const grantId = tab.grantId;
+    const grant = this.grants.get(grantId);
+    const current = url ?? (await this.api.getTab(tabId))?.url;
+    const origin = current && !isRestrictedUrl(current) ? urlOrigin(current) : null;
+    if (!grant || !origin || !grant.origins.includes(origin)) await this.endShare(grantId);
   }
 
   private async rememberGrant(grantId: string): Promise<void> {
@@ -514,6 +806,8 @@ export class BrowserSession {
     const expired = new Set([...this.grants.values()].filter((grant) => grantExpired(grant, now)).map((grant) => grant.grant_id));
     if (expired.size) {
       this.runner.cancelWhere((command) => expired.has(command.grant_id), 'grant_expired');
+      // A shared tab is given back to the person when its time is up.
+      for (const grantId of expired) if (this.grants.get(grantId)?.tab) this.dropGrant(grantId);
       for (const tab of this.tabs.all()) if (expired.has(tab.grantId)) void this.router.forget(tab.tabId);
       this.markTabs();
       this.broadcast();
@@ -536,7 +830,7 @@ export class BrowserSession {
   private onEvent(frame: EventFrame): void {
     switch (frame.event) {
       case RELAY_EVENTS.command:
-        void this.runner.handle(frame.payload);
+        if (this.commandAdmission) void this.runner.handle(frame.payload);
         return;
       case RELAY_EVENTS.cancel: {
         const parsed = commandCancelSchema.safeParse(frame.payload);
@@ -566,14 +860,21 @@ export class BrowserSession {
     this.tabMeta.delete(tab.handle);
     void this.router.forget(tabId);
     this.persistTabs();
+    if (tab.shared) void this.endShare(tab.grantId);
   }
 
-  /** A navigation or reload in an owned tab: refs from earlier snapshots are stale. */
+  /**
+   * A navigation or reload in an owned tab: refs from earlier snapshots are stale. In a shared tab,
+   * leaving the shared origin ends the share (Chrome hides the URL of a site without access, which
+   * counts as leaving).
+   */
   onTabUpdated(tabId: number, change: { status?: string; url?: string }): void {
     if (change.status !== 'loading' && change.url === undefined) return;
-    if (!this.tabs.byTabId(tabId)) return;
+    const tab = this.tabs.byTabId(tabId);
+    if (!tab) return;
     this.tabs.bump(tabId);
     this.persistTabs();
+    if (tab.shared) void this.checkShareOrigin(tabId, change.url);
   }
 
   /**
@@ -585,8 +886,9 @@ export class BrowserSession {
     if (this.router.isDispatching(tabId)) return;
     const tab = this.tabs.noteUserInput(tabId, this.now());
     if (!tab) return;
-    this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle);
-    if (this.control === 'active') void this.setControl('paused', 'takeover');
+    const cancelled = this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle);
+    // A shared tab is the person's own: using it pauses the agent only when it interrupts a command.
+    if (this.control === 'active' && (!tab.shared || cancelled > 0)) void this.setControl('paused', 'takeover');
   }
 
   // ---------- Debugger (Advanced build) ----------
@@ -632,7 +934,21 @@ export class BrowserSession {
     else this.broadcast();
   }
 
-  private async setDebugger(prefs: DebuggerPrefs): Promise<void> {
+  private setDebugger(prefs: DebuggerPrefs): Promise<void> {
+    const epoch = this.epoch;
+    const capabilityChanged = this.debuggerDesired.enabled !== prefs.enabled;
+    this.debuggerDesired = prefs;
+    const generation = capabilityChanged ? ++this.attachGeneration : this.attachGeneration;
+    if (capabilityChanged && this.transport?.isReady && this.attachedTransport === this.transport) this.commandAdmission = false;
+    const change = this.debuggerChanges.then(async () => {
+      if (epoch !== this.epoch) return;
+      await this.applyDebugger(prefs, generation);
+    });
+    this.debuggerChanges = change.catch(() => undefined);
+    return change;
+  }
+
+  private async applyDebugger(prefs: DebuggerPrefs, generation: number): Promise<void> {
     const was = this.debuggerPrefs;
     this.debuggerPrefs = prefs;
     if (was.enabled && !prefs.enabled) {
@@ -651,12 +967,17 @@ export class BrowserSession {
     const device = this.device;
     const transport = this.transport;
     if (was.enabled !== prefs.enabled && device && transport?.isReady && this.attachedTransport === transport) {
-      await transport
-        .request('browser.device.attach', { device_id: device.device_id, capabilities: this.liveCapabilities() })
-        .then((attached) => {
-          if (this.transport === transport) this.setGrants(attached.grants);
-        })
-        .catch(() => undefined);
+      const epoch = this.epoch;
+      this.commandAdmission = false;
+      try {
+        await this.attach(transport, epoch, generation);
+      } catch {
+        if (this.transport === transport && transport.isReady) transport.renew();
+      }
+    } else if (was.enabled !== prefs.enabled && device && transport?.isReady) {
+      // A capability change raced the socket's initial attach. Its generation is now stale, so
+      // reconnect and let onReady attach once with the latest desired capabilities.
+      transport.renew();
     }
     this.broadcast();
   }
@@ -679,6 +1000,7 @@ export class BrowserSession {
     const activityGrant = activity ? this.grants.get(activity.grantId) : undefined;
     return {
       mode: this.mode,
+      kind: this.kind,
       connection: this.mode === 'ready' ? this.connection : 'offline',
       error: this.error,
       device: this.device ? { ...this.device } : null,
@@ -701,12 +1023,26 @@ export class BrowserSession {
         fallback: this.debuggerPrefs.fallback,
         attached: this.router.attachedTabs.length,
       },
-      tabs: this.tabs.all().map((tab) => ({
+      // Shared tabs are listed under shares.
+      tabs: this.tabs
+        .all()
+        .filter((tab) => !tab.shared)
+        .map((tab) => ({
         handle: tab.handle,
         agentName: this.tabMeta.get(tab.handle)?.agentName ?? '',
         domain: this.tabMeta.get(tab.handle)?.domain ?? '',
         expiresAt: this.grants.get(tab.grantId)?.expires_at ?? null,
       })),
+      shares: this.tabs
+        .all()
+        .filter((tab) => tab.shared && this.grants.has(tab.grantId))
+        .map((tab) => ({
+          grantId: tab.grantId,
+          tabId: tab.tabId,
+          agentName: this.tabMeta.get(tab.handle)?.agentName ?? '',
+          domain: this.tabMeta.get(tab.handle)?.domain || hostOf(this.grants.get(tab.grantId)?.origins[0]),
+          expiresAt: this.grants.get(tab.grantId)?.expires_at ?? null,
+        })),
       timeline: this.timeline.map((entry) => ({ ...entry })),
       approvals: this.approvals.pending,
     };
@@ -736,6 +1072,32 @@ export class BrowserSession {
         case 'browser.grant.refresh':
           await this.refreshGrants();
           return { ok: true };
+        case 'browser.policy.accept': {
+          const profileId = await this.cloudProfileId();
+          if (!profileId) return { ok: false, code: 'invalid_request' };
+          await browser.storage.local.set({ [policyKey(profileId)]: { accepted_at: this.now() } });
+          await this.sync();
+          return { ok: true };
+        }
+        case 'browser.workspace.status': {
+          const profileId = await this.cloudProfileId();
+          if (!profileId) return { ok: false, code: 'invalid_request' };
+          const status = await (this.deps.cloud ?? cloudRelayApi).status(profileId);
+          return { ok: true, workspace: { connected: status.connected, canEnable: status.can_enable } };
+        }
+        case 'browser.workspace.enable': {
+          const profileId = await this.cloudProfileId();
+          if (!profileId) return { ok: false, code: 'invalid_request' };
+          const connected = await (this.deps.cloud ?? cloudRelayApi).enable(profileId);
+          // Connect now instead of at the next alarm.
+          if (connected && this.error === 'browser_disabled') this.error = undefined;
+          await this.sync();
+          return { ok: true, workspace: { connected, canEnable: true } };
+        }
+        case 'browser.share.stop':
+          if (!this.grants.get(request.grantId)?.tab) return { ok: false, code: 'not_found' };
+          await this.endShare(request.grantId);
+          return { ok: true };
         case 'browser.advanced':
           if (!this.router.advancedAvailable) return { ok: false, code: 'unsupported_capability' };
           await this.setDebugger({ enabled: request.enabled, fallback: request.fallback });
@@ -744,27 +1106,10 @@ export class BrowserSession {
       const transport = this.transport;
       if (this.mode !== 'ready' || !transport?.isReady) return { ok: false, code: 'device_offline' };
       switch (request.type) {
-        case 'browser.enroll': {
-          if (this.attachedTransport !== transport) return { ok: false, code: 'device_offline' };
-          const os = await platformOs();
-          const name = request.name.trim() || deviceNameFor(os);
-          if (!isValidDeviceName(name)) return { ok: false, code: 'invalid_device_name' };
-          // What this build can do; attach then announces what is turned on right now.
-          const capabilities = deviceCapabilities(this.router.advancedAvailable, true);
-          const { device_id } = await transport.request('browser.device.enroll', { name, platform: os, capabilities });
-          const profileId = this.profileId;
-          if (!profileId || this.transport !== transport) return { ok: false, code: 'device_offline' };
-          this.device = { device_id, name };
-          await browser.storage.local.set({ [deviceKey(profileId)]: this.device });
-          // A Pause/Stop the person set before registering applies to the new device too.
-          if (this.controlChosen || this.control !== 'active') {
-            this.controlChosen = true;
-            await this.persistControl();
-          }
-          await this.attach(transport, this.epoch);
-          this.broadcast();
-          return { ok: true };
-        }
+        case 'browser.enroll':
+          return await this.enroll(transport, request.name);
+        case 'browser.share.start':
+          return await this.shareTab(transport, request);
         case 'browser.device.list':
           return { ok: true, devices: (await transport.request('browser.device.list', {})).devices };
         case 'browser.device.rename': {
@@ -793,6 +1138,102 @@ export class BrowserSession {
     }
   }
 
+  /** The active profile's id when it is a Dewee Cloud profile. */
+  private async cloudProfileId(): Promise<string | null> {
+    const profile = activeProfile(await loadSettings());
+    return profile?.kind === 'cloud' ? profile.id : null;
+  }
+
+  /** Registers this browser; an empty name becomes the platform default ("Chrome on Windows"). */
+  private async enroll(transport: RelayTransport, requestedName: string): Promise<BackgroundResponse> {
+    if (this.attachedTransport !== transport) return { ok: false, code: 'device_offline' };
+    const os = await platformOs();
+    const name = requestedName.trim() || deviceNameFor(os);
+    if (!isValidDeviceName(name)) return { ok: false, code: 'invalid_device_name' };
+    // What this build can do; attach then announces what is turned on right now.
+    const capabilities = deviceCapabilities(this.router.advancedAvailable, true);
+    const { device_id } = await transport.request('browser.device.enroll', { name, platform: os, capabilities });
+    const profileId = this.profileId;
+    if (!profileId || this.transport !== transport) return { ok: false, code: 'device_offline' };
+    this.device = { device_id, name };
+    await browser.storage.local.set({ [deviceKey(profileId)]: this.device });
+    // A Pause/Stop the person set before registering applies to the new device too.
+    if (this.controlChosen || this.control !== 'active') {
+      this.controlChosen = true;
+      await this.persistControl();
+    }
+    await this.attach(transport, this.epoch);
+    this.broadcast();
+    return { ok: true };
+  }
+
+  /** `browser.grant.create` refusals the person can act on; anything else is rethrown. */
+  private async grantCreateRefusal(transport: RelayTransport, error: unknown): Promise<BackgroundResponse> {
+    const code = errorCode(error);
+    // The device was revoked elsewhere: forget it, so the person can register again.
+    if (code === 'not_found') {
+      if (this.transport === transport) await this.forgetDevice();
+      return { ok: false, code: 'device_revoked' };
+    }
+    // An agent the person may not allow (shared by someone else), or a key without the right.
+    if (code === 'unauthorized') return { ok: false, code: 'grant_unauthorized' };
+    throw error;
+  }
+
+  /**
+   * "Let the agent use this tab": one tab the person has open, its exact origin (Chrome site access
+   * asked for in the panel's click), read and act, for an hour at most, for one agent. Registers
+   * this browser first when needed, with the default name.
+   */
+  private async shareTab(transport: RelayTransport, request: Extract<BrowserRequest, { type: 'browser.share.start' }>): Promise<BackgroundResponse> {
+    if (this.attachedTransport !== transport) return { ok: false, code: 'device_offline' };
+    if (!agentId.safeParse(request.agentId).success) return { ok: false, code: 'agent_unavailable' };
+    const info = await this.api.getTab(request.tabId);
+    const origin = info?.url && !isRestrictedUrl(info.url) ? urlOrigin(info.url) : null;
+    if (!origin || !isExactOrigin(origin)) return { ok: false, code: 'tab_not_shareable' };
+    if (!(await this.api.hasHostPermission(origin))) return { ok: false, code: 'origin_permission_missing' };
+    const existing = this.tabs.byTabId(request.tabId);
+    // Already shared: the same agent is a no-op; another agent needs the current share stopped first.
+    if (existing) return existing.shared && existing.agentId === request.agentId ? { ok: true } : { ok: false, code: 'tab_in_use' };
+    if (!this.device) {
+      const enrolled = await this.enroll(transport, '');
+      if (!enrolled.ok) return enrolled;
+    }
+    const device = this.device;
+    if (!device || this.attachedTransport !== transport) return { ok: false, code: 'device_offline' };
+    const handle = this.tabs.sharedHandle();
+    const capabilities: ['browser.read', 'browser.control'] = ['browser.read', 'browser.control'];
+    let grant: Grant;
+    try {
+      ({ grant } = await transport.request('browser.grant.create', { device_id: device.device_id, agent_ids: [request.agentId], origins: [origin], capabilities, ttl_seconds: SHARED_TAB_TTL_MAX, tab: handle }));
+    } catch (error) {
+      return await this.grantCreateRefusal(transport, error);
+    }
+    if (this.transport !== transport) return { ok: false, code: 'device_offline' };
+    await this.rememberGrant(grant.grant_id);
+    // The person may have moved the tab to another site, or closed it, while the grant was created.
+    const now = await this.api.getTab(request.tabId);
+    const unchanged = now?.url !== undefined && urlOrigin(now.url) === origin && !this.tabs.byTabId(request.tabId);
+    if (unchanged) this.tabs.add(request.tabId, grant.grant_id, request.agentId, { handle, shared: true });
+    // The Gateway's copy must be exactly what the person shared.
+    const exact = grant.tab === handle && sameSet(grant.origins, [origin]) && sameSet(grant.agent_ids, [request.agentId]) && sameSet(grant.capabilities, capabilities) && this.acceptable(grant);
+    if (!unchanged || !exact) {
+      this.tabs.releaseGrant(grant.grant_id);
+      this.forgetGrantId(grant.grant_id);
+      await this.revokeEndedShare(transport, grant.grant_id);
+      return { ok: false, code: unchanged ? 'invalid_response' : 'tab_changed' };
+    }
+    this.tabMeta.set(handle, { agentName: request.agentName, domain: hostOf(origin) });
+    this.grants.set(grant.grant_id, grant);
+    this.scheduleExpiry();
+    this.persistTabs();
+    this.broadcast();
+    // A navigation between the check above and registering the tab is not seen by onTabUpdated: look again.
+    await this.checkShareOrigin(request.tabId);
+    if (!this.grants.has(grant.grant_id)) return { ok: false, code: 'tab_changed' };
+    return { ok: true };
+  }
+
   private async createGrant(transport: RelayTransport, request: Extract<BrowserRequest, { type: 'browser.grant.create' }>): Promise<BackgroundResponse> {
     const device = this.device;
     if (!device) return { ok: false, code: 'not_enrolled' };
@@ -812,15 +1253,7 @@ export class BrowserSession {
     try {
       ({ grant } = await transport.request('browser.grant.create', { device_id: device.device_id, agent_ids: request.agentIds, origins, capabilities, ttl_seconds: request.ttlSeconds }));
     } catch (error) {
-      const code = errorCode(error);
-      // The device was revoked elsewhere: forget it, so the person can register again.
-      if (code === 'not_found') {
-        if (this.transport === transport) await this.forgetDevice();
-        return { ok: false, code: 'device_revoked' };
-      }
-      // An agent the person may not allow (shared by someone else), or a key without the right.
-      if (code === 'unauthorized') return { ok: false, code: 'grant_unauthorized' };
-      throw error;
+      return await this.grantCreateRefusal(transport, error);
     }
     if (this.transport !== transport) return { ok: false, code: 'device_offline' };
     await this.rememberGrant(grant.grant_id);
@@ -847,8 +1280,9 @@ export class BrowserSession {
       void this.router.detachAll();
     }
     await this.persistControl();
-    // Stop also ends the agent's hold on its tabs; they stay open for the person.
+    // Stop also ends the agent's hold on its tabs; they stay open for the person. Shared tabs end on the Gateway too.
     if (state === 'stopped') {
+      await Promise.all(this.sharedGrantIds().map((grantId) => this.endShare(grantId)));
       for (const tab of this.tabs.all()) void this.router.forget(tab.tabId);
       this.tabs.clear();
       this.tabMeta.clear();

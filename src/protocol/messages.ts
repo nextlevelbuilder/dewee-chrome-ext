@@ -33,6 +33,13 @@ export const requestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('browser.grant.refresh') }),
   z.object({ type: z.literal('browser.control'), state: z.enum(['active', 'paused', 'stopped']) }),
   z.object({ type: z.literal('browser.approval'), id, approve: z.boolean() }),
+  /** Dewee Cloud: the person accepted the browser-use policy; the workspace switch (owner/admin turns it on). */
+  z.object({ type: z.literal('browser.policy.accept') }).strict(),
+  z.object({ type: z.literal('browser.workspace.status') }).strict(),
+  z.object({ type: z.literal('browser.workspace.enable') }).strict(),
+  /** Share the tab the person has open with one agent; the worker re-reads the tab and its origin itself. */
+  z.object({ type: z.literal('browser.share.start'), tabId: z.number().int().nonnegative(), agentId: id, agentName: z.string().max(200) }).strict(),
+  z.object({ type: z.literal('browser.share.stop'), grantId: id }).strict(),
   /** Advanced build: the person's debugger choice for this device session. */
   z.object({ type: z.literal('browser.advanced'), enabled: z.boolean(), fallback: z.boolean() }).strict(),
 ]);
@@ -40,7 +47,7 @@ export type BackgroundRequest = z.infer<typeof requestSchema>;
 export type BrowserRequest = Extract<BackgroundRequest, { type: `browser.${string}` }>;
 
 export type BackgroundResponse =
-  | { ok: true; authorization?: string; devices?: Device[] }
+  | { ok: true; authorization?: string; devices?: Device[]; workspace?: { connected: boolean; canEnable: boolean } }
   /** `status` is the HTTP-style status of the failure; absent means the worker could not answer. */
   | { ok: false; code: string; message?: string; status?: number };
 

@@ -7,6 +7,7 @@ import type { PanelState } from '@/browser/panel-state';
 import type { BackgroundResponse, BrowserRequest } from '@/protocol/messages';
 import { hasMessage, useI18n, type Translate } from '@/shared/i18n';
 import { IconPause, IconPlay, IconStop } from '@/shared/icons';
+import { SharedTabs } from './CloudBrowser';
 
 type Call = (request: BrowserRequest) => Promise<BackgroundResponse>;
 
@@ -87,7 +88,7 @@ export function BrowserActivity({ state, call }: { state: PanelState; call: Call
   const { t, locale } = useI18n();
   if (state.mode !== 'ready') return null;
   const { activity, control, approvals } = state;
-  if (!activity && !approvals.length && control === 'active') return null;
+  if (!activity && !approvals.length && !state.shares.length && control === 'active') return null;
   const actionKey = activity ? `browser.action.${activity.action}` : '';
   return (
     <section className="browser-activity" aria-label={t('browser.title')} data-testid="browser-activity">
@@ -112,6 +113,7 @@ export function BrowserActivity({ state, call }: { state: PanelState; call: Call
           })}
         </p>
       ) : null}
+      <SharedTabs shares={state.shares} call={call} />
       <ApprovalCards approvals={approvals} call={call} />
     </section>
   );
