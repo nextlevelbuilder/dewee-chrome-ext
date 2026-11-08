@@ -4,21 +4,40 @@ import type { RelayTicket } from '@/api/schemas';
 import { writeCredential } from '@/auth/credential-store';
 import type { BrowserApi, TabInfo } from '@/browser/chrome-api';
 import type { CloudRelayApi } from '@/browser/cloud-relay';
-import { BrowserSession, policyKey } from '@/browser/session';
+import type { AdvancedEngine } from '@/browser/engine-router';
+import type { DriverRequest, DriverResponse } from '@/browser/adapters/page-driver';
+import { BrowserSession, deviceKey, grantsKey, policyKey } from '@/browser/session';
 import { defaultSettings, saveSettings, type Profile, type Settings } from '@/shared/settings';
-import { AGENT_ID, DEVICE_ID, grant, GRANT_ID, NOW, ORIGIN } from './fixtures';
+import { AGENT_ID, DEVICE_ID, grant, GRANT_ID, NOW, ORIGIN, payload } from './fixtures';
 import { FakeSocket, flush } from './fake-socket';
 
 const cloud: Profile = { id: 'p_cloud', name: 'Cloud', kind: 'cloud', origin: 'https://app.example.test', remember: false };
 const TAB = 7;
 const KEY = 'relay-key-secret-value';
+const LEGACY_ATTACH_REJECTION = 'params must be an object with only the documented fields: json: unknown field "shared_tab_contract"';
+const STANDARD_GRANT_ID = '66666666-6666-4666-8666-666666666666';
+const ORPHAN_HANDLE = 's_AAAAAAAAAAAAAAAAAAAAAA';
 
-function settings(connectedBrowser = true): Settings {
+function settings(connectedBrowser = true, workspaceId = 'w1'): Settings {
   const base = defaultSettings();
-  return { ...base, profiles: [cloud], activeProfileId: cloud.id, selections: { [cloud.id]: { workspaceId: 'w1', workspaces: {} } }, prefs: { ...base.prefs, connectedBrowser } };
+  return { ...base, profiles: [cloud], activeProfileId: cloud.id, selections: { [cloud.id]: { workspaceId, workspaces: {} } }, prefs: { ...base.prefs, connectedBrowser } };
 }
 
-function setup() {
+function fakeAdvancedEngine(): AdvancedEngine {
+  return {
+    attachedTabs: [],
+    prepare: async () => null,
+    policy: async () => null,
+    release: async () => undefined,
+    forget: () => undefined,
+    forceDetach: async () => undefined,
+    detachAll: async () => undefined,
+    isDispatching: () => false,
+    run: async (_tabId: number, request: DriverRequest) => ({ ok: true, op: request.op }) as DriverResponse,
+  };
+}
+
+function setup(options: { advanced?: boolean } = {}) {
   let clock = NOW;
   let serial = 0;
   const tabs = new Map<number, TabInfo>([[TAB, { url: `${ORIGIN}/cart`, title: 'Cart', status: 'complete', active: true }]]);
@@ -39,6 +58,7 @@ function setup() {
   const session = new BrowserSession({
     api,
     action: null,
+    cdp: options.advanced ? () => fakeAdvancedEngine() : undefined,
     cloud: cloudApi,
     random: () => 0.5,
     now: () => clock,
@@ -108,6 +128,20 @@ describe('BrowserSession on Dewee Cloud', () => {
     await t.connect();
     const stored = JSON.stringify([await fakeBrowser.storage.local.get(null), await fakeBrowser.storage.session.get(null), t.session.state()]);
     expect(stored).not.toContain(KEY);
+  });
+
+  it('does not use the self-hosted legacy attach fallback on Cloud', async () => {
+    await fakeBrowser.storage.local.set({
+      [policyKey(cloud.id)]: { accepted_at: NOW },
+      [deviceKey(cloud.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' },
+    });
+    const t = setup();
+    await t.session.sync();
+    await t.connect();
+    t.socket().refuse(t.socket().last('browser.device.attach'), 'INVALID_REQUEST', LEGACY_ATTACH_REJECTION);
+    await flush();
+    expect(t.socket().sent.filter((frame) => frame.method === 'browser.device.attach')).toHaveLength(1);
+    expect(t.socket().closed).toBe(true);
   });
 
   it('reconnects with a fresh ticket a minute before the key expires', async () => {
@@ -180,6 +214,77 @@ describe('BrowserSession on Dewee Cloud', () => {
     expect(t.sockets).toHaveLength(0);
   });
 
+  it('serializes overlapping capability reattaches and admits only after the final desired state', async () => {
+    await fakeBrowser.storage.local.set({
+      [policyKey(cloud.id)]: { accepted_at: NOW },
+      [deviceKey(cloud.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' },
+      [grantsKey(cloud.id)]: [GRANT_ID],
+    });
+    const t = setup({ advanced: true });
+    await t.session.sync();
+    await t.connect();
+    t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
+    await flush();
+
+    const enabled = t.session.handleRequest({ type: 'browser.advanced', enabled: true, fallback: false });
+    await flush();
+    const first = t.socket().last('browser.device.attach');
+    expect(first.params.capabilities).toEqual(['standard', 'advanced']);
+
+    const disabled = t.session.handleRequest({ type: 'browser.advanced', enabled: false, fallback: false });
+    await flush();
+    expect(t.socket().sent.filter((frame) => frame.method === 'browser.device.attach')).toHaveLength(2);
+    t.socket().event('browser.command', payload('tabs', {}));
+    await flush();
+    expect(t.socket().methods()).not.toContain('browser.command.ack');
+
+    // The stale first completion cannot admit; only then is the final desired request sent.
+    t.socket().reply(first, { device_id: DEVICE_ID, grants: [grant()] });
+    await flush();
+    const attaches = t.socket().sent.filter((frame) => frame.method === 'browser.device.attach');
+    expect(attaches).toHaveLength(3);
+    const final = attaches.at(-1)!;
+    expect(final.params.capabilities).toEqual(['standard']);
+    t.socket().event('browser.command', payload('tabs', {}));
+    await flush();
+    expect(t.socket().methods()).not.toContain('browser.command.ack');
+
+    t.socket().reply(final, { device_id: DEVICE_ID, grants: [grant()] });
+    await Promise.all([enabled, disabled]);
+    t.socket().event('browser.command', payload('tabs', {}));
+    await flush();
+    expect(t.socket().methods()).toContain('browser.command.ack');
+    t.socket().reply(t.socket().last('browser.command.ack'));
+    await flush();
+    t.socket().reply(t.socket().last('browser.command.result'));
+  });
+
+  it('reconnects with the latest capabilities when a toggle races the initial attach', async () => {
+    await fakeBrowser.storage.local.set({
+      [policyKey(cloud.id)]: { accepted_at: NOW },
+      [deviceKey(cloud.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' },
+      [grantsKey(cloud.id)]: [GRANT_ID],
+    });
+    const t = setup({ advanced: true });
+    await t.session.sync();
+    await t.connect();
+    const stale = t.socket();
+
+    await expect(t.session.handleRequest({ type: 'browser.advanced', enabled: true, fallback: false })).resolves.toEqual({ ok: true });
+    await flush();
+    expect(stale.closed).toBe(true);
+    expect(t.sockets).toHaveLength(2);
+
+    await t.connect();
+    const latest = t.socket().last('browser.device.attach');
+    expect(latest.params.capabilities).toEqual(['standard', 'advanced']);
+    t.socket().reply(latest, { device_id: DEVICE_ID, grants: [grant()] });
+    await flush();
+    t.socket().event('browser.command', payload('tabs', {}));
+    await flush();
+    expect(t.socket().methods()).toContain('browser.command.ack');
+  });
+
   describe('shared tab', () => {
     async function shared() {
       await fakeBrowser.storage.local.set({ [policyKey(cloud.id)]: { accepted_at: NOW } });
@@ -214,9 +319,143 @@ describe('BrowserSession on Dewee Cloud', () => {
         expect(t.session.state().shares).toEqual([]);
         vi.advanceTimersByTime(1_000);
         await t.connect();
-        t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [] });
+        t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: 's_offline' })] });
         await flush();
         expect(t.socket().last('browser.grant.revoke').params).toEqual({ grant_id: GRANT_ID });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reconnects after a failed live revoke and reconstructs cleanup from the next attach', async () => {
+      const { t, create } = await shared();
+      const stopped = t.session.handleRequest({ type: 'browser.share.stop', grantId: GRANT_ID });
+      await flush();
+      t.socket().refuse(t.socket().last('browser.grant.revoke'), 'INTERNAL');
+      await expect(stopped).resolves.toEqual({ ok: true });
+      expect(t.sockets).toHaveLength(2);
+
+      await t.connect();
+      t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: create.params.tab as string })] });
+      await flush();
+      const retry = t.socket().last('browser.grant.revoke');
+      t.socket().reply(retry);
+      await flush();
+      expect(t.session.state()).toMatchObject({ connection: 'connected', shares: [] });
+    });
+
+    it('keeps a genuinely live shared grant after reconnecting', async () => {
+      vi.useFakeTimers();
+      try {
+        const { t, create } = await shared();
+        t.socket().drop();
+        vi.advanceTimersByTime(1_000);
+        await t.connect();
+        t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: create.params.tab as string })] });
+        await flush();
+        expect(t.socket().methods()).not.toContain('browser.grant.revoke');
+        expect(t.session.state()).toMatchObject({ connection: 'connected', shares: [{ grantId: GRANT_ID, tabId: TAB }] });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('revokes a formerly live share when attach observes another current origin', async () => {
+      vi.useFakeTimers();
+      try {
+        const { t, create } = await shared();
+        t.socket().drop();
+        t.tabs.set(TAB, { url: 'https://elsewhere.example.test/', status: 'complete', active: true });
+        vi.advanceTimersByTime(1_000);
+        await t.connect();
+        t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: create.params.tab as string })] });
+        await flush();
+        const revoke = t.socket().last('browser.grant.revoke');
+        t.socket().reply(revoke);
+        await flush();
+        expect(t.session.state()).toMatchObject({ connection: 'connected', shares: [] });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('retains standard grants but revokes remote shared orphans before admitting commands', async () => {
+      await fakeBrowser.storage.local.set({
+        [policyKey(cloud.id)]: { accepted_at: NOW },
+        [deviceKey(cloud.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' },
+        [grantsKey(cloud.id)]: [STANDARD_GRANT_ID, GRANT_ID],
+      });
+      const t = setup();
+      await t.session.sync();
+      await t.connect();
+      t.socket().reply(t.socket().last('browser.device.attach'), {
+        device_id: DEVICE_ID,
+        grants: [grant({ grant_id: STANDARD_GRANT_ID, capabilities: ['browser.read'] }), grant({ tab: ORPHAN_HANDLE })],
+      });
+      await flush();
+
+      t.socket().event('browser.command', payload('tabs', { tab: ORPHAN_HANDLE }, { grant_tab: ORPHAN_HANDLE, grant_origin: ORIGIN }));
+      await flush();
+      expect(t.socket().methods()).not.toContain('browser.command.ack');
+      const revoke = t.socket().last('browser.grant.revoke');
+      t.socket().reply(revoke);
+      await flush();
+      expect(t.session.state().grants).toEqual([expect.objectContaining({ grant_id: STANDARD_GRANT_ID })]);
+      expect(t.session.state().connection).toBe('connected');
+    });
+
+    it('keeps admission closed and reconnects when orphan cleanup is refused', async () => {
+      vi.useFakeTimers();
+      try {
+        await fakeBrowser.storage.local.set({
+          [policyKey(cloud.id)]: { accepted_at: NOW },
+          [deviceKey(cloud.id)]: { device_id: DEVICE_ID, name: 'Chrome on Windows' },
+          [grantsKey(cloud.id)]: [GRANT_ID],
+        });
+        const t = setup();
+        await t.session.sync();
+        await t.connect();
+        t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: ORPHAN_HANDLE })] });
+        await flush();
+        t.socket().event('browser.command', payload('tabs', { tab: ORPHAN_HANDLE }, { grant_tab: ORPHAN_HANDLE, grant_origin: ORIGIN }));
+        await flush();
+        expect(t.socket().methods()).not.toContain('browser.command.ack');
+        t.socket().refuse(t.socket().last('browser.grant.revoke'), 'INTERNAL');
+        await flush();
+        expect(t.socket().closed).toBe(true);
+        vi.advanceTimersByTime(1_000);
+        await flush();
+        expect(t.sockets).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('bounds a workspace switch with no revoke answer and cleans the orphan when that workspace returns', async () => {
+      vi.useFakeTimers();
+      try {
+        const { t, create } = await shared();
+        await saveSettings(settings(true, 'w2'));
+        const switching = t.session.sync();
+        await flush();
+        expect(t.socket().methods()).toContain('browser.grant.revoke');
+        t.socket().event('browser.command', payload('tabs', { tab: create.params.tab }, { grant_tab: create.params.tab, grant_origin: ORIGIN }));
+        await flush();
+        expect(t.socket().methods()).not.toContain('browser.command.ack');
+        vi.advanceTimersByTime(2_000);
+        await flush();
+        await switching;
+        expect(t.session.state().shares).toEqual([]);
+
+        await saveSettings(settings(true, 'w1'));
+        await t.session.sync();
+        await t.connect();
+        t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: create.params.tab as string })] });
+        await flush();
+        const cleanup = t.socket().last('browser.grant.revoke');
+        t.socket().reply(cleanup);
+        await flush();
+        expect(t.session.state()).toMatchObject({ connection: 'connected', shares: [] });
       } finally {
         vi.useRealTimers();
       }
@@ -242,8 +481,15 @@ describe('BrowserSession on Dewee Cloud', () => {
       await restarted.connect();
       restarted.socket().reply(restarted.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant({ tab: 's_AAAAAAAAAAAAAAAAAAAAAA' })] });
       await flush();
+      restarted.socket().event('browser.command', payload('tabs', { tab: 's_AAAAAAAAAAAAAAAAAAAAAA' }, { grant_tab: 's_AAAAAAAAAAAAAAAAAAAAAA', grant_origin: ORIGIN }));
+      await flush();
+      expect(restarted.socket().methods()).not.toContain('browser.command.ack');
       expect(restarted.session.state().shares).toEqual([]);
-      expect(restarted.socket().last('browser.grant.revoke').params).toEqual({ grant_id: GRANT_ID });
+      const revoke = restarted.socket().last('browser.grant.revoke');
+      expect(revoke.params).toEqual({ grant_id: GRANT_ID });
+      restarted.socket().reply(revoke);
+      await flush();
+      expect(restarted.session.state().connection).toBe('connected');
     });
 
     it('ends when the tab closes, and revokes the grant on the Gateway', async () => {
@@ -339,8 +585,10 @@ describe('BrowserSession on Dewee Cloud', () => {
       t.tabs.set(TAB, { url: 'https://elsewhere.example.test/', status: 'complete', active: true });
       const create = t.socket().last('browser.grant.create');
       t.socket().reply(create, { grant: grant({ tab: create.params.tab as string }) });
+      await flush();
+      const revoke = t.socket().last('browser.grant.revoke');
+      t.socket().reply(revoke);
       await expect(pending).resolves.toEqual({ ok: false, code: 'tab_changed' });
-      expect(t.socket().methods()).toContain('browser.grant.revoke');
       expect(t.session.state().shares).toEqual([]);
     });
   });

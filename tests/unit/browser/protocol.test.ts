@@ -44,6 +44,14 @@ describe('parseCommand', () => {
 });
 
 describe('method params', () => {
+  it('types the shared-tab marker and the one legacy retry shape', () => {
+    const params = { device_id: DEVICE_ID, capabilities: ['standard'], shared_tab_contract: 1 };
+    const schema = methodParamsSchemas['browser.device.attach'];
+    expect(schema.safeParse(params).success).toBe(true);
+    expect(schema.safeParse({ ...params, shared_tab_contract: 0 }).success).toBe(false);
+    expect(schema.safeParse({ device_id: DEVICE_ID, capabilities: ['standard'] }).success).toBe(true);
+  });
+
   it('connect sends exactly token, client and version', () => {
     expect(methodParamsSchemas.connect.safeParse({ token: 'k', client: 'dewee-chrome-ext', version: '1.0.0' }).success).toBe(true);
     expect(methodParamsSchemas.connect.safeParse({ token: 'k', client: 'other', version: '1.0.0' }).success).toBe(false);

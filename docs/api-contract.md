@@ -13,6 +13,13 @@ Source of truth for this contract: this file plus the Zod schemas in `src/protoc
 
 ## Conventions
 
+Connected-browser attachments send `shared_tab_contract:1`, including reconnects
+and capability changes. This promises exact shared-tab and current-origin checks
+before execution; a Gateway refuses shared-tab commands from older attachments.
+For legacy self-hosted Gateways only, the extension retries once without the
+field when the Gateway returns the exact unsupported-field refusal. Cloud
+connections and all other errors never use this compatibility retry.
+
 - JSON bodies use `snake_case`. Requests carry `Authorization: Bearer <token>` and `Content-Type: application/json`. Cookies are never used or accepted by these routes.
 - Errors use one envelope and an HTTP status:
 

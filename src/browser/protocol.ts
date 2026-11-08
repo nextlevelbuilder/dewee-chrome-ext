@@ -202,7 +202,7 @@ const exactOrigin = z.string().refine(isExactOrigin, 'exact https origin, or htt
 export const methodParamsSchemas = {
   connect: z.object({ token: z.string().min(1), client: z.literal('dewee-chrome-ext'), version: z.string().min(1) }).strict(),
   'browser.device.enroll': z.object({ name: deviceName, platform: z.string().min(1).max(40), capabilities: deviceCapabilities }).strict(),
-  'browser.device.attach': z.object({ device_id: uuid, capabilities: deviceCapabilities }).strict(),
+  'browser.device.attach': z.object({ device_id: uuid, capabilities: deviceCapabilities, shared_tab_contract: z.literal(1).optional() }).strict(),
   'browser.device.heartbeat': z.object({ device_id: uuid }).strict(),
   'browser.device.list': z.object({}).strict(),
   'browser.device.rename': z.object({ device_id: uuid, name: deviceName }).strict(),
