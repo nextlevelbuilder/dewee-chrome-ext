@@ -39,7 +39,9 @@ describe('requestSchema', () => {
     const fields = requestSchema.options.flatMap((option) => Object.keys(option.shape)).sort();
     // Every field is listed so a new one has to be reviewed here; none of them is a secret.
     expect([...new Set(fields)]).toEqual([
+      'agentId',
       'agentIds',
+      'agentName',
       'approve',
       'capabilities',
       'deviceId',
@@ -51,6 +53,7 @@ describe('requestSchema', () => {
       'origins',
       'profileId',
       'state',
+      'tabId',
       'ttlSeconds',
       'type',
     ]);

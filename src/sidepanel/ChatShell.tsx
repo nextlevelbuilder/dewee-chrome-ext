@@ -70,7 +70,10 @@ export function ChatShell({
   const browserEnabled = settings.prefs.connectedBrowser;
   const browserControl = useBrowserControl(browserEnabled);
   const [showBrowser, setShowBrowser] = useState(false);
-  const browserOpen = showBrowser && browserEnabled;
+  // Dewee Cloud offers the switch in the panel itself; a self-hosted profile turns it on in Settings.
+  const browserAvailable = browserEnabled || profile.kind === 'cloud';
+  const browserOpen = showBrowser && browserAvailable;
+  const setBrowserPref = useCallback((on: boolean) => void update((s) => ({ ...s, prefs: { ...s.prefs, connectedBrowser: on } })), [update]);
   const closeBrowser = useCallback(() => setShowBrowser(false), []);
 
   const workspaces = useWorkspaces(client, onAuthError);
@@ -260,7 +263,7 @@ export function ChatShell({
               <IconCompose />
             </button>
           ) : null}
-          {browserEnabled ? (
+          {browserAvailable ? (
             <button
               ref={browserToggleRef}
               type="button"
@@ -388,8 +391,17 @@ export function ChatShell({
       {browserOpen ? (
         <div className="drawer" id="browser-drawer" role="dialog" aria-modal="true" aria-label={t('browser.title')}>
           <div className="drawer-scrim" aria-hidden="true" onClick={closeBrowser} />
-          {browserControl.state ? (
-            <BrowserControlDrawer state={browserControl.state} agents={agentList} call={browserControl.call} onClose={closeBrowser} />
+          {browserControl.state || !browserEnabled ? (
+            <BrowserControlDrawer
+              state={browserControl.state}
+              agents={agentList}
+              agent={agent}
+              profileId={profile.id}
+              call={browserControl.call}
+              onClose={closeBrowser}
+              onTurnOn={profile.kind === 'cloud' ? () => setBrowserPref(true) : undefined}
+              onTurnOff={profile.kind === 'cloud' ? () => setBrowserPref(false) : undefined}
+            />
           ) : (
             <section className="browser-panel" aria-busy="true">
               <div className="skeleton" style={{ height: 36 }} />

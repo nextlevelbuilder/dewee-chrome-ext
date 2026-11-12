@@ -41,7 +41,7 @@ describe('buildAuthorizeUrl', () => {
       code_challenge: 'challenge-value',
       code_challenge_method: 'S256',
       state: 'state-value',
-      scope: 'chat workspaces actions',
+      scope: 'chat workspaces actions browser',
     });
   });
 });

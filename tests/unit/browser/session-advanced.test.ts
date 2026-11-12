@@ -170,7 +170,7 @@ describe('BrowserSession: Standard build', () => {
   it('has no debugger: refuses the opt-in and announces only standard', async () => {
     const t = setup({ advanced: false });
     await t.ready();
-    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'] });
+    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'], shared_tab_contract: 1 });
     expect(t.session.state().advanced).toEqual({ available: false, enabled: false, fallback: true, attached: 0 });
     await expect(t.session.handleRequest({ type: 'browser.advanced', enabled: true, fallback: true })).resolves.toEqual({ ok: false, code: 'unsupported_capability' });
     const open = await t.command('open', { url: `${ORIGIN}/` });
@@ -183,12 +183,12 @@ describe('BrowserSession: Advanced build', () => {
   it('is off by default, and announces advanced only while the person has it on', async () => {
     const t = setup();
     await t.ready();
-    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'] });
+    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'], shared_tab_contract: 1 });
     expect(t.session.state().advanced).toMatchObject({ available: true, enabled: false });
 
     const on = t.session.handleRequest({ type: 'browser.advanced', enabled: true, fallback: false });
     await flush();
-    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard', 'advanced'] });
+    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard', 'advanced'], shared_tab_contract: 1 });
     t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
     await expect(on).resolves.toEqual({ ok: true });
     expect(t.session.state().advanced).toMatchObject({ enabled: true, fallback: false });
@@ -198,7 +198,7 @@ describe('BrowserSession: Advanced build', () => {
 
     const off = t.session.handleRequest({ type: 'browser.advanced', enabled: false, fallback: false });
     await flush();
-    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'] });
+    expect(t.socket().last('browser.device.attach').params).toEqual({ device_id: DEVICE_ID, capabilities: ['standard'], shared_tab_contract: 1 });
     t.socket().reply(t.socket().last('browser.device.attach'), { device_id: DEVICE_ID, grants: [grant()] });
     await off;
     expect(t.engine()?.calls).toContain('detachAll');

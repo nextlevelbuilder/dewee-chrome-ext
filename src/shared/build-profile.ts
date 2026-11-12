@@ -14,7 +14,8 @@
 export type BuildProfile = 'standard' | 'advanced';
 
 /** Manifest permissions every build needs. */
-export const BASE_PERMISSIONS = ['sidePanel', 'storage', 'identity', 'alarms', 'scripting'] as const;
+/** `activeTab`: the tab in front when the person opens Dewee can be read to offer "Let the agent use this tab" (no install warning). */
+export const BASE_PERMISSIONS = ['sidePanel', 'storage', 'identity', 'alarms', 'scripting', 'activeTab'] as const;
 
 /** Unset or empty means Standard; anything else unknown fails the build instead of silently picking one. */
 export function profileFromEnv(value: string | undefined): BuildProfile {

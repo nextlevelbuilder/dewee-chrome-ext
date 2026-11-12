@@ -159,3 +159,31 @@ describe('LocalGuard.checkTab', () => {
     expect(await guard.checkTab('t1', grant(), true)).toMatchObject({ ok: false, code: 'busy' });
   });
 });
+
+describe('LocalGuard with a shared-tab grant', () => {
+  const sharedGrant = () => grant({ tab: 't1' });
+
+  it('runs a command on the shared tab only', () => {
+    const { guard } = setup();
+    expect(guard.checkGrant(command('snapshot', { tab: 't1' }, { grant_tab: 't1' }), sharedGrant(), 'active')).toEqual({ ok: true });
+    expect(guard.checkGrant(command('snapshot', { tab: 't2' }, { grant_tab: 't1' }), sharedGrant(), 'active')).toMatchObject({ ok: false, code: 'tab_not_owned' });
+  });
+
+  it('never opens or closes a tab under it', () => {
+    const { guard } = setup();
+    expect(guard.checkGrant(command('open', { url: `${ORIGIN}/` }, { grant_tab: 't1' }), sharedGrant(), 'active')).toMatchObject({ ok: false, code: 'tab_not_owned' });
+    expect(guard.checkGrant(command('close', { tab: 't1' }, { grant_tab: 't1' }), sharedGrant(), 'active')).toMatchObject({ ok: false, code: 'tab_not_owned' });
+  });
+
+  it('refuses a command whose grant_tab does not match its grant', () => {
+    const { guard } = setup();
+    expect(guard.checkGrant(command('snapshot', { tab: 't1' }), sharedGrant(), 'active')).toMatchObject({ ok: false, code: 'tab_not_owned' });
+    expect(guard.checkGrant(command('snapshot', { tab: 't1' }, { grant_tab: 't1' }), grant(), 'active')).toMatchObject({ ok: false, code: 'tab_not_owned' });
+  });
+
+  it('refuses another origin in the shared tab', async () => {
+    const { guard, tabs } = setup({ tabUrl: vi.fn(async () => 'https://elsewhere.example.test/') });
+    tabs.add(5, GRANT_ID, AGENT_ID, { handle: 't1', shared: true });
+    await expect(guard.checkTab('t1', sharedGrant(), true)).resolves.toMatchObject({ ok: false, code: 'origin_not_granted' });
+  });
+});

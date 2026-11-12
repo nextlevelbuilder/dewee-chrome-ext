@@ -92,6 +92,21 @@ export class LocalGuard {
     const needs = ACTION_CLASS[command.action] === 'read' ? 'browser.read' : 'browser.control';
     if (!grant.capabilities.includes(needs)) return refuse('capability_not_granted', `The grant does not allow ${needs}`);
     if (command.action === 'screenshot' && !screenshots) return refuse('unsupported_capability', 'Screenshots need the advanced build with the debugger turned on');
+    return this.checkSharedTab(command, grant);
+  }
+
+  /**
+   * A shared-tab grant covers the one tab the person shared: the command must name that grant's tab
+   * (`grant_tab`), touch no other tab, never open one, and never close the person's tab. A command
+   * that claims a shared tab under a grant without one is refused too.
+   */
+  private checkSharedTab(command: BrowserCommand, grant: Grant): GuardResult {
+    const shared = grant.tab ?? undefined;
+    if (command.grant_tab !== shared) return refuse('tab_not_owned', 'The command does not match the shared tab of its grant');
+    if (shared === undefined) return { ok: true };
+    if (command.action === 'open') return refuse('tab_not_owned', 'A shared tab grant never opens new tabs');
+    if (command.action === 'close') return refuse('tab_not_owned', 'A shared tab stays open for the person');
+    if ('tab' in command.params && command.params.tab !== shared) return refuse('tab_not_owned', 'Only the shared tab can be used under this grant');
     return { ok: true };
   }
 

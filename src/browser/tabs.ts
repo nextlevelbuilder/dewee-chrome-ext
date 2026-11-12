@@ -2,6 +2,8 @@
  * Tabs the agent opened under a grant ("owned tabs"). Agents see only opaque handles (`t1`, `t2`,
  * ...); raw `chrome.tabs` ids never leave the extension. Each tab has a single-writer lease, a
  * snapshot generation that moves on every navigation, and a short hold after the person uses it.
+ * A shared tab is one the person already had open and shared with an agent; it is owned the same way
+ * but stays the person's tab (it is never closed by the agent).
  */
 import { z } from 'zod';
 
@@ -17,12 +19,14 @@ export interface OwnedTab {
   /** Bound to the tab's current document; bumped on navigation, reload and large DOM changes. */
   generation: number;
   closed: boolean;
+  /** The person shared this tab (a shared-tab grant); the agent did not open it. */
+  shared?: boolean;
 }
 
 const storedSchema = z.object({
   next: z.number().int().positive(),
   tabs: z.array(
-    z.object({ handle: z.string(), tabId: z.number().int(), grantId: z.string(), agentId: z.string(), generation: z.number().int().nonnegative(), closed: z.boolean() }),
+    z.object({ handle: z.string(), tabId: z.number().int(), grantId: z.string(), agentId: z.string(), generation: z.number().int().nonnegative(), closed: z.boolean(), shared: z.boolean().optional() }),
   ),
 });
 export type StoredTabs = z.infer<typeof storedSchema>;
@@ -33,12 +37,27 @@ export class TabRegistry {
   private readonly leases = new Set<string>();
   private readonly heldUntil = new Map<number, number>();
 
-  add(tabId: number, grantId: string, agentId: string): OwnedTab {
+  add(tabId: number, grantId: string, agentId: string, options: { handle?: string; shared?: boolean } = {}): OwnedTab {
     const existing = this.byTabId(tabId);
     if (existing) this.tabs.delete(existing.handle);
-    const tab: OwnedTab = { handle: `t${this.next++}`, tabId, grantId, agentId, generation: 1, closed: false };
+    const tab: OwnedTab = { handle: options.handle ?? this.reserveHandle(), tabId, grantId, agentId, generation: 1, closed: false, ...(options.shared ? { shared: true } : {}) };
     this.tabs.set(tab.handle, tab);
     return tab;
+  }
+
+  /** A fresh counter handle (`t1`, `t2`...) for a tab an agent opens. */
+  reserveHandle(): string {
+    return `t${this.next++}`;
+  }
+
+  /**
+   * A shared tab's handle: 128 random bits, not derived from the Chrome tab id or a counter, so it
+   * cannot be guessed and is never reused.
+   */
+  sharedHandle(): string {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const encoded = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `s_${encoded}`;
   }
 
   get(handle: string): OwnedTab | undefined {

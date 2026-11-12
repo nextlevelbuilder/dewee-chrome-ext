@@ -4,6 +4,10 @@
  * correlates request/response frames, sends a heartbeat every 20 s and reconnects with
  * exponential backoff (1 s → 30 s, jittered). It never replays a request after a reconnect: a
  * request in flight when the socket drops fails with `device_offline`.
+ *
+ * Dewee Cloud connects with a short-lived relay key instead: `prepare` fetches a fresh ticket (key
+ * and socket URL) before every socket is opened, and the session calls `renew` before the key
+ * expires. The key passes through `token()` into the `connect` frame only.
  */
 import { inboundFrameSchema, methodParamsSchemas, methodResultSchemas, type EventFrame, type MethodParams, type MethodResult, type RelayMethod } from './protocol';
 
@@ -31,6 +35,8 @@ export class RelayError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    /** Set by `prepare` when retrying cannot help (signed out, feature off): the transport stops with this code. */
+    readonly fatal = false,
   ) {
     super(message);
     this.name = 'RelayError';
@@ -41,10 +47,12 @@ export class RelayError extends Error {
 const FATAL_CONNECT_CODES = new Set(['PERMISSION_DENIED', 'UNAUTHORIZED', 'UNAUTHENTICATED', 'permission_denied', 'unauthorized', 'unauthenticated']);
 
 export interface TransportOptions {
-  /** `ws://` or `wss://` URL of the gateway's `/ws`. */
-  url: string;
-  /** The personal API key for `connect`; read at each (re)connect, never stored by the transport. */
+  /** `ws://` or `wss://` URL of the gateway's `/ws`; a function when `prepare` decides it. */
+  url: string | (() => string);
+  /** The key for `connect`; read at each (re)connect, never stored by the transport. */
   token(): Promise<string>;
+  /** Runs before every new socket (Cloud: fetch a relay ticket). A `fatal` RelayError stops the transport; anything else retries with backoff. */
+  prepare?(): Promise<void>;
   version: string;
   /** Called once `connect` succeeded on a new socket (attach the device here). Throwing closes the socket. */
   onReady(): Promise<void>;
@@ -88,6 +96,8 @@ export class RelayTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private ready = false;
+  /** Bumped on every open, stop and renew, so a `prepare` that finishes late opens nothing. */
+  private openSeq = 0;
   private readonly createSocket: SocketFactory;
   private readonly random: () => number;
 
@@ -114,6 +124,7 @@ export class RelayTransport {
   /** Closes the socket for good; pending requests fail and nothing reconnects. */
   stop(detail?: { code?: string }): void {
     clearTimeout(this.reconnectTimer);
+    this.openSeq += 1;
     this.teardown('device_offline');
     if (this.state === 'stopped') return;
     this.state = 'stopped';
@@ -148,12 +159,40 @@ export class RelayTransport {
     });
   }
 
+  /** Closes the current socket and connects again at once (a fresh Cloud ticket); requests in flight fail. */
+  renew(): void {
+    if (this.state === 'stopped' || this.state === 'idle') return;
+    clearTimeout(this.reconnectTimer);
+    this.teardown('device_offline');
+    this.attempt = 0;
+    this.open();
+  }
+
   private open(): void {
     clearTimeout(this.reconnectTimer);
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
+    if (!this.options.prepare) {
+      this.openSocket();
+      return;
+    }
+    const opening = ++this.openSeq;
+    this.options.prepare().then(
+      () => {
+        if (opening === this.openSeq && this.state !== 'stopped') this.openSocket();
+      },
+      (error: unknown) => {
+        if (opening !== this.openSeq || this.state === 'stopped') return;
+        if (error instanceof RelayError && error.fatal) this.stop({ code: error.code });
+        else this.scheduleReconnect();
+      },
+    );
+  }
+
+  private openSocket(): void {
     let socket: SocketLike;
     try {
-      socket = this.createSocket(this.options.url);
+      const { url } = this.options;
+      socket = this.createSocket(typeof url === 'function' ? url() : url);
     } catch {
       this.scheduleReconnect();
       return;

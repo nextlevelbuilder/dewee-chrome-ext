@@ -57,10 +57,17 @@ heartbeat or when its socket closes. Reconnect uses exponential backoff
 
 All params are strict objects; unknown fields are rejected.
 
+The extension first sends `shared_tab_contract:1` on every attach. A legacy
+self-hosted Gateway that returns `INVALID_REQUEST` with exactly
+`params must be an object with only the documented fields: json: unknown field "shared_tab_contract"`
+gets one retry without that field for its existing agent-owned browser support.
+Cloud connections and other errors never use this retry. A current Gateway still
+requires the announcement before dispatching any shared-tab command.
+
 | Method | Params | Result |
 |---|---|---|
 | `browser.device.enroll` | `{name, platform, capabilities:["standard"] \| ["standard","advanced"]}` | `{device_id}` (server-generated, random) |
-| `browser.device.attach` | `{device_id, capabilities}` | `{device_id, grants:[Grant]}`. Binds this socket as the device's live connection. The extension enrolls with what its build can do and sends on every attach what is usable now (`advanced` only while the person has Advanced mode on); it re-attaches on the same socket when that changes. Refused (`NOT_FOUND`) unless the device belongs to the authenticated principal and tenant and is not revoked. A newer attach replaces an older socket. |
+| `browser.device.attach` | `{device_id, capabilities, shared_tab_contract:1}` | `{device_id, grants:[Grant]}`. Binds this socket as the device's live connection. The extension enrolls with what its build can do and sends on every attach what is usable now (`advanced` only while the person has Advanced mode on); it re-attaches on the same socket when that changes. Contract version 1 announces exact shared-tab and current-origin enforcement before side effects. Gateways refuse shared-tab dispatch without this announcement. Refused (`NOT_FOUND`) unless the device belongs to the authenticated principal and tenant and is not revoked. A newer attach replaces an older socket. |
 | `browser.device.heartbeat` | `{device_id}` | `{}` |
 | `browser.device.list` | `{}` | `{devices:[Device]}` (the principal's devices in this tenant) |
 | `browser.device.rename` | `{device_id, name}` | `{device}` |

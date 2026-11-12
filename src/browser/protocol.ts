@@ -15,6 +15,8 @@ export const ERROR_CODES = [
   'grant_expired',
   'grant_revoked',
   'origin_not_granted',
+  /** A shared tab no longer shows its granted origin. */
+  'origin_not_allowed',
   'capability_not_granted',
   'unsupported_capability',
   'restricted_page',
@@ -68,14 +70,20 @@ export const TYPE_MAX_CHARS = 10_000;
 export const GRANT_TTL = { min: 60, max: 28_800, default: 3_600 } as const;
 export const GRANT_MAX_ORIGINS = 20;
 export const GRANT_MAX_AGENTS = 20;
+/** A shared-tab grant (one tab the person shared) lasts at most an hour. */
+export const SHARED_TAB_TTL_MAX = 3_600;
+/** Device tab handle as the Gateway accepts it in a shared-tab grant. */
+export const TAB_HANDLE_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
-const tab = z.string().regex(/^t[1-9]\d{0,8}$/);
+/** `t1`, `t2`... for tabs an agent opened; a random `s_...` handle for a shared tab. */
+const tab = z.string().regex(/^(t[1-9]\d{0,8}|s_[A-Za-z0-9_-]{22})$/);
 const ref = z.string().regex(/^e[1-9]\d{0,8}$/);
 const generation = z.number().int().nonnegative();
 const url = z.string().min(1).max(4096);
 
 export const actionParamsSchemas = {
-  tabs: z.object({}).strict(),
+  // Under a shared-tab grant the Gateway names the shared tab here; the guard checks it equals grant_tab.
+  tabs: z.object({ tab: tab.optional() }).strict(),
   open: z.object({ url }).strict(),
   navigate: z.object({ tab, url }).strict(),
   snapshot: z.object({ tab, max_chars: z.number().int().min(1).max(SNAPSHOT_MAX_CHARS).optional() }).strict(),
@@ -103,6 +111,10 @@ export const commandEnvelopeSchema = z
     params: z.record(z.string(), z.unknown()),
     class: z.enum(['read', 'interact']),
     deadline: z.iso.datetime({ offset: true }),
+    /** Present only when the command runs under a shared-tab grant: the one tab it may touch. */
+    grant_tab: z.string().regex(TAB_HANDLE_PATTERN).optional(),
+    /** With `grant_tab`: the one origin of that shared-tab grant. */
+    grant_origin: z.string().max(300).optional(),
   })
   .strict();
 export type CommandEnvelope = z.infer<typeof commandEnvelopeSchema>;
@@ -141,6 +153,8 @@ export const grantSchema = z.preprocess(
     expires_at: z.iso.datetime({ offset: true }),
     revoked_at: z.string().nullish(),
     created_at: z.string().nullish(),
+    /** Set on a shared-tab grant: the device tab handle it covers. */
+    tab: z.string().nullish(),
   }),
 );
 export type Grant = z.infer<typeof grantSchema>;
@@ -188,7 +202,7 @@ const exactOrigin = z.string().refine(isExactOrigin, 'exact https origin, or htt
 export const methodParamsSchemas = {
   connect: z.object({ token: z.string().min(1), client: z.literal('dewee-chrome-ext'), version: z.string().min(1) }).strict(),
   'browser.device.enroll': z.object({ name: deviceName, platform: z.string().min(1).max(40), capabilities: deviceCapabilities }).strict(),
-  'browser.device.attach': z.object({ device_id: uuid, capabilities: deviceCapabilities }).strict(),
+  'browser.device.attach': z.object({ device_id: uuid, capabilities: deviceCapabilities, shared_tab_contract: z.literal(1).optional() }).strict(),
   'browser.device.heartbeat': z.object({ device_id: uuid }).strict(),
   'browser.device.list': z.object({}).strict(),
   'browser.device.rename': z.object({ device_id: uuid, name: deviceName }).strict(),
@@ -200,8 +214,11 @@ export const methodParamsSchemas = {
       origins: z.array(exactOrigin).min(1).max(GRANT_MAX_ORIGINS),
       capabilities: z.union([z.tuple([z.literal('browser.read')]), z.tuple([z.literal('browser.read'), z.literal('browser.control')])]),
       ttl_seconds: z.number().int().min(GRANT_TTL.min).max(GRANT_TTL.max),
+      tab: z.string().regex(TAB_HANDLE_PATTERN).optional(),
     })
-    .strict(),
+    .strict()
+    // A shared-tab grant covers exactly one origin for at most an hour.
+    .refine((params) => params.tab === undefined || (params.origins.length === 1 && params.ttl_seconds <= SHARED_TAB_TTL_MAX), 'a shared-tab grant has one origin and lasts at most an hour'),
   'browser.grant.list': z.object({ device_id: uuid }).strict(),
   'browser.grant.revoke': z.object({ grant_id: uuid }).strict(),
   'browser.command.ack': z.object({ command_id: uuid }).strict(),
