@@ -22,7 +22,7 @@ Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked** 
 ## Connect
 
 - **Dewee Cloud:** choose *Dewee Cloud* and *Sign in*. You approve access on Dewee, then return to the panel.
-- **Self-hosted:** choose *Self-hosted*, enter your Gateway URL (HTTPS, or `http://localhost` for development) and a personal API key created in Dewee. The Gateway operator must allow the origin `chrome-extension://poicgajeapmbcilfbeobdfedibiffbbm` (`GOCLAW_ALLOWED_ORIGINS`). Never use the gateway master token.
+- **Self-hosted:** choose *Self-hosted*, enter your Gateway URL (HTTPS, or `http://localhost` for development) and a personal API key created in Dewee. The Gateway operator must allow the extension origin in `GOCLAW_ALLOWED_ORIGINS` (exact match): `chrome-extension://fckahaihlmpbcldmlopffgmocflpnjha` for the Chrome Web Store install, `chrome-extension://poicgajeapmbcilfbeobdfedibiffbbm` for an unpacked or sideloaded build. Never use the gateway master token.
 
 By default the credential is kept only until Chrome closes. Tick *Remember on this device* to keep it on disk.
 
