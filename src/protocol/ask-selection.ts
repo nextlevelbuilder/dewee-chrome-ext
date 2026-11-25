@@ -66,3 +66,9 @@ export function formatAskDraft({ text, url, title }: Pick<AskSelection, 'text' |
   const link = shareableUrl(url);
   return `${quote}\n\n${name ? `Source: ${name} — ${link}` : `Source: ${link}`}\n\n`;
 }
+
+/** Placements of the "Ask Dewee" button relative to the selection. `auto`: below, or above near the bottom edge. */
+export const ASK_BUTTON_POSITIONS = ['auto', 'top', 'bottom', 'left', 'right'] as const;
+export type AskButtonPosition = (typeof ASK_BUTTON_POSITIONS)[number];
+/** `storage.local` key holding only the button placement, the one setting the page script reads. */
+export const ASK_POSITION_KEY = 'askButtonPosition';

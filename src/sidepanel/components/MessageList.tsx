@@ -5,7 +5,7 @@ import { looseCards } from '@/chat/chat-state';
 import { formatToolText } from '@/chat/tool-detail';
 import { ActionCard } from '@/credentials/ActionCard';
 import type { RespondFn } from '@/credentials/respond-types';
-import { errorText, hasMessage, useI18n } from '@/shared/i18n';
+import { chatErrorText, hasMessage, useI18n } from '@/shared/i18n';
 import { BrandMark } from '@/shared/icons';
 import { renderMarkdown } from '@/shared/markdown';
 import type { UiActionCard } from '@/protocol/ui-action';
@@ -70,7 +70,7 @@ function MessageError({ message, onRetry, onReload, onShowSessions }: { message:
   const error = message.error;
   if (!error) return null;
   const recoveryKey = error.action ? `recovery.${error.action}` : '';
-  const text = hasMessage(recoveryKey) ? t(recoveryKey) : errorText(t, error.code, error.retryAfterSeconds);
+  const text = hasMessage(recoveryKey) ? t(recoveryKey) : chatErrorText(t, error);
   return (
     <div className="notice notice-error message-error" role="alert">
       <span>{text}</span>

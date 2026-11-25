@@ -195,6 +195,13 @@ const en = {
   'settings.askOnSelection': 'Ask Dewee about selected text',
   'settings.askOnSelection.hint': 'Shows an Ask Dewee button when you select text on a web page. Clicking it opens the side panel with the quote, page title and address in the message box; nothing is sent until you press Send. Needs access to websites; applies to pages opened after turning it on. Turning it off removes the button; to remove site access too, use Chrome’s extension settings.',
   'settings.askOnSelection.denied': 'Chrome did not grant website access, so the button stays off.',
+  'settings.askPosition': 'Button position',
+  'settings.askPosition.hint': 'Pick a fixed side if the button covers another extension, such as Google Translate.',
+  'settings.askPosition.auto': 'Automatic',
+  'settings.askPosition.top': 'Above the selection',
+  'settings.askPosition.bottom': 'Below the selection',
+  'settings.askPosition.left': 'Left of the selection',
+  'settings.askPosition.right': 'Right of the selection',
   'settings.showReasoning': 'Show reasoning',
   'settings.showReasoning.hint': 'Show the agent’s thinking under each reply, collapsed.',
   'settings.showToolDetails': 'Show tool call details',
@@ -535,6 +542,13 @@ const vi: Record<MessageKey, string> = {
   'settings.askOnSelection': 'Hỏi Dewee về đoạn văn bản đã chọn',
   'settings.askOnSelection.hint': 'Hiện nút Hỏi Dewee khi bạn bôi đen văn bản trên trang web. Bấm nút sẽ mở side panel, đưa trích dẫn, tiêu đề và địa chỉ trang vào ô nhập; không gửi gì cho tới khi bạn bấm Gửi. Cần quyền truy cập website; áp dụng cho các trang mở sau khi bật. Tắt sẽ gỡ nút; muốn thu hồi cả quyền truy cập website, dùng phần cài đặt extension của Chrome.',
   'settings.askOnSelection.denied': 'Chrome chưa cấp quyền truy cập website nên nút vẫn tắt.',
+  'settings.askPosition': 'Vị trí nút',
+  'settings.askPosition.hint': 'Chọn một phía cố định nếu nút che mất extension khác, ví dụ Google Dịch.',
+  'settings.askPosition.auto': 'Tự động',
+  'settings.askPosition.top': 'Phía trên đoạn chọn',
+  'settings.askPosition.bottom': 'Phía dưới đoạn chọn',
+  'settings.askPosition.left': 'Bên trái đoạn chọn',
+  'settings.askPosition.right': 'Bên phải đoạn chọn',
   'settings.showReasoning': 'Hiện phần suy luận',
   'settings.showReasoning.hint': 'Hiện suy nghĩ của agent bên dưới mỗi câu trả lời, ở dạng thu gọn.',
   'settings.showToolDetails': 'Hiện chi tiết tool call',
@@ -713,4 +727,17 @@ export function errorText(t: Translate, code: string, retryAfterSeconds?: number
   const key = `error.${code}`;
   if (hasMessage(key)) return t(key, { seconds: retryAfterSeconds ?? 30 });
   return t('error.generic', { code });
+}
+
+/**
+ * Text for a failed chat turn. A known code keeps its localized text. A generic 409 (`conflict`)
+ * or an unknown code carries the server's own fixed explanation (for example "the AI provider is
+ * unavailable"), which says far more than "This changed on the server", so it is shown instead.
+ * Server messages are fixed texts that never echo a submitted value (docs/api-contract.md).
+ */
+export function chatErrorText(t: Translate, error: { code: string; message?: string; retryAfterSeconds?: number }): string {
+  const generic = error.code === 'conflict' || !hasMessage(`error.${error.code}`);
+  const serverText = error.message?.trim();
+  if (generic && serverText && serverText !== error.code && !/^HTTP \d+$/.test(serverText)) return serverText;
+  return errorText(t, error.code, error.retryAfterSeconds);
 }

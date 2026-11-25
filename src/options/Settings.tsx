@@ -4,7 +4,7 @@
  */
 import { useState } from 'react';
 import { browser } from 'wxt/browser';
-import { ASK_ORIGINS } from '@/protocol/ask-selection';
+import { ASK_BUTTON_POSITIONS, ASK_ORIGINS, type AskButtonPosition } from '@/protocol/ask-selection';
 import { ConnectForm } from '@/shared/ConnectForm';
 import { removeProfile, signOutProfile, verifyProfile } from '@/shared/connect';
 import { errorText, I18nContext, useI18n } from '@/shared/i18n';
@@ -153,6 +153,30 @@ function AskToggle({ settings, update }: { settings: StoredSettings | null; upda
   );
 }
 
+/** Where the "Ask Dewee" button appears, so it can stay clear of other extensions' popups. */
+function AskPosition({ settings, update }: { settings: StoredSettings; update: SettingsState['update'] }) {
+  const { t } = useI18n();
+  return (
+    <label className="field">
+      <span>{t('settings.askPosition')}</span>
+      <select
+        value={settings.prefs.askButtonPosition}
+        onChange={(e) => {
+          const askButtonPosition = e.target.value as AskButtonPosition;
+          void update((s) => ({ ...s, prefs: { ...s.prefs, askButtonPosition } }));
+        }}
+      >
+        {ASK_BUTTON_POSITIONS.map((p) => (
+          <option key={p} value={p}>
+            {t(`settings.askPosition.${p}`)}
+          </option>
+        ))}
+      </select>
+      <span className="muted small">{t('settings.askPosition.hint')}</span>
+    </label>
+  );
+}
+
 export function Settings() {
   const state = useSettings();
   const { settings, connected, update, t, locale } = state;
@@ -221,6 +245,7 @@ export function Settings() {
             <PrefToggle pref="showReasoning" label={t('settings.showReasoning')} hint={t('settings.showReasoning.hint')} settings={settings} update={update} />
             <PrefToggle pref="showToolDetails" label={t('settings.showToolDetails')} hint={t('settings.showToolDetails.hint')} settings={settings} update={update} />
             <AskToggle settings={settings} update={update} />
+            {settings?.prefs.askOnSelection ? <AskPosition settings={settings} update={update} /> : null}
             <PrefToggle pref="connectedBrowser" label={t('settings.connectedBrowser')} hint={t('settings.connectedBrowser.hint')} settings={settings} update={update} />
           </div>
           <p className="privacy muted small">

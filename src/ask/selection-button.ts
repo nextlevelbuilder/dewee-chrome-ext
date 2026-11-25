@@ -3,7 +3,45 @@
  * selection, the page title and the address, and only when the button is clicked. Selections in
  * form fields and editable areas are ignored, so typed passwords and drafts are never offered.
  */
-import { MAX_SELECTION, type AskSelection } from '@/protocol/ask-selection';
+import { MAX_SELECTION, type AskButtonPosition, type AskSelection } from '@/protocol/ask-selection';
+
+const BUTTON_W = 112;
+const BUTTON_H = 30;
+const GAP = 8;
+
+/**
+ * Top-left of the button for a selection box. A fixed side lets the person keep the button clear of
+ * other extensions' popups (Google Translate shows its icon below the selection, for example).
+ * Every placement is clamped inside the viewport.
+ */
+export function placeButton(rect: { top: number; bottom: number; left: number; right: number }, position: AskButtonPosition, view: { width: number; height: number }): { top: number; left: number } {
+  let top: number;
+  let left: number;
+  const midY = (rect.top + rect.bottom) / 2 - BUTTON_H / 2;
+  switch (position) {
+    case 'top':
+      top = rect.top - GAP - BUTTON_H;
+      left = rect.left;
+      break;
+    case 'bottom':
+      top = rect.bottom + GAP;
+      left = rect.left;
+      break;
+    case 'left':
+      top = midY;
+      left = rect.left - GAP - BUTTON_W;
+      break;
+    case 'right':
+      top = midY;
+      left = rect.right + GAP;
+      break;
+    default:
+      top = rect.bottom + GAP > view.height - 40 ? rect.top - 40 : rect.bottom + GAP;
+      left = rect.right - 100;
+  }
+  const clamp = (v: number, max: number) => Math.round(Math.min(Math.max(GAP, v), Math.max(GAP, max)));
+  return { top: clamp(top, view.height - BUTTON_H - GAP), left: clamp(left, view.width - BUTTON_W - GAP) };
+}
 
 const STYLE = `
 :host { all: initial; }
@@ -55,6 +93,7 @@ export function mountAskButton(
   send: (message: AskSelection) => unknown,
   label = defaultLabel(doc),
   byPerson: (event: MouseEvent) => boolean = (event) => event.isTrusted,
+  position: () => AskButtonPosition = () => 'auto',
 ): { button: HTMLButtonElement; dispose(): void } {
   const host = doc.createElement('dewee-ask');
   const root = host.attachShadow({ mode: 'closed' });
@@ -85,11 +124,9 @@ export function mountAskButton(
     if (!found) return hide();
     current = found.text;
     const view = doc.defaultView;
-    const width = view?.innerWidth ?? 1024;
-    const height = view?.innerHeight ?? 768;
-    const top = found.rect.bottom + 8 > height - 40 ? Math.max(8, found.rect.top - 40) : found.rect.bottom + 8;
-    button.style.top = `${Math.round(top)}px`;
-    button.style.left = `${Math.round(Math.min(Math.max(8, found.rect.right - 100), width - 120))}px`;
+    const place = placeButton(found.rect, position(), { width: view?.innerWidth ?? 1024, height: view?.innerHeight ?? 768 });
+    button.style.top = `${place.top}px`;
+    button.style.left = `${place.left}px`;
     if (!host.isConnected) doc.documentElement.append(host);
     button.hidden = false;
   };
@@ -98,8 +135,13 @@ export function mountAskButton(
     if (!event.composedPath().includes(host)) setTimeout(show, 0);
   };
   const onKey = (event: KeyboardEvent) => (event.key === 'Escape' ? hide() : later(event));
-  const onDown = (event: MouseEvent) => {
+  const onDown = (event: Event) => {
     if (!event.composedPath().includes(host)) hide();
+  };
+  // A selection can also vanish without a mouseup or keyup here: a click a page swallows, a page or
+  // another extension clearing it, or a tap. Whenever it is gone, the button goes too.
+  const onSelectionChange = () => {
+    if (!button.hidden && !selectedText(doc)) hide();
   };
 
   // Keep the page selection while the button is pressed.
@@ -112,13 +154,20 @@ export function mountAskButton(
   });
   doc.addEventListener('mouseup', later);
   doc.addEventListener('keyup', onKey);
-  doc.addEventListener('mousedown', onDown, true);
+  // On the window, in capture: a page stopping the event on the document cannot keep the button up.
+  doc.defaultView?.addEventListener('pointerdown', onDown, true);
+  doc.defaultView?.addEventListener('mousedown', onDown, true);
+  doc.addEventListener('selectionchange', onSelectionChange);
   doc.defaultView?.addEventListener('scroll', hide, { passive: true, capture: true });
+  doc.defaultView?.addEventListener('blur', hide);
 
   const dispose = () => {
     doc.removeEventListener('mouseup', later);
     doc.removeEventListener('keyup', onKey);
-    doc.removeEventListener('mousedown', onDown, true);
+    doc.defaultView?.removeEventListener('pointerdown', onDown, true);
+    doc.defaultView?.removeEventListener('mousedown', onDown, true);
+    doc.removeEventListener('selectionchange', onSelectionChange);
+    doc.defaultView?.removeEventListener('blur', hide);
     doc.defaultView?.removeEventListener('scroll', hide, { capture: true });
     host.remove();
   };
