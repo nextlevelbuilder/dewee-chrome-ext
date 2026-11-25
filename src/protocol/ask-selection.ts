@@ -70,5 +70,11 @@ export function formatAskDraft({ text, url, title }: Pick<AskSelection, 'text' |
 /** Placements of the "Ask Dewee" button relative to the selection. `auto`: below, or above near the bottom edge. */
 export const ASK_BUTTON_POSITIONS = ['auto', 'top', 'bottom', 'left', 'right'] as const;
 export type AskButtonPosition = (typeof ASK_BUTTON_POSITIONS)[number];
-/** `storage.local` key holding only the button placement, the one setting the page script reads. */
-export const ASK_POSITION_KEY = 'askButtonPosition';
+/**
+ * The page script asks the service worker for the placement; it cannot read `storage.local`, which
+ * is limited to extension pages. The answer is only the placement, never other settings.
+ */
+export const askPositionRequestSchema = z.object({ type: z.literal('ask.position') });
+export function asAskPosition(value: unknown): AskButtonPosition {
+  return (ASK_BUTTON_POSITIONS as readonly unknown[]).includes(value) ? (value as AskButtonPosition) : 'auto';
+}

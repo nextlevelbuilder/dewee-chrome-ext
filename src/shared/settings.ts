@@ -5,7 +5,7 @@
  */
 import { browser } from 'wxt/browser';
 import { z } from 'zod';
-import { ASK_BUTTON_POSITIONS, ASK_POSITION_KEY } from '@/protocol/ask-selection';
+import { ASK_BUTTON_POSITIONS } from '@/protocol/ask-selection';
 
 export const SETTINGS_KEY = 'settings';
 
@@ -72,8 +72,7 @@ export async function loadSettings(): Promise<Settings> {
 
 export async function saveSettings(settings: Settings): Promise<void> {
   const parsed = settingsSchema.parse(settings);
-  // The page script reads only this mirrored key, never the profiles in `settings`.
-  await browser.storage.local.set({ [SETTINGS_KEY]: parsed, [ASK_POSITION_KEY]: parsed.prefs.askButtonPosition });
+  await browser.storage.local.set({ [SETTINGS_KEY]: parsed });
 }
 
 let writes: Promise<unknown> = Promise.resolve();

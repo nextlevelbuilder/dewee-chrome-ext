@@ -3,22 +3,19 @@
  * registers it only after the person turns the feature on and grants site access.
  */
 import { mountAskButton } from '@/ask/selection-button';
-import { ASK_BUTTON_POSITIONS, ASK_POSITION_KEY, type AskButtonPosition } from '@/protocol/ask-selection';
-
-function asPosition(value: unknown): AskButtonPosition {
-  return (ASK_BUTTON_POSITIONS as readonly unknown[]).includes(value) ? (value as AskButtonPosition) : 'auto';
-}
+import { asAskPosition, type AskButtonPosition } from '@/protocol/ask-selection';
 
 export default defineContentScript({
   matches: ['https://*/*'],
   registration: 'runtime',
   main() {
-    // Only the placement key is read; it updates live when changed in Settings.
+    // The worker answers with the placement only. Asked again when the tab regains focus, so a change
+    // made in Settings applies on return without reloading the page.
     let position: AskButtonPosition = 'auto';
-    void browser.storage.local.get(ASK_POSITION_KEY).then((r) => (position = asPosition(r[ASK_POSITION_KEY])), () => undefined);
-    browser.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes[ASK_POSITION_KEY]) position = asPosition(changes[ASK_POSITION_KEY].newValue);
-    });
+    const refresh = () =>
+      void browser.runtime.sendMessage({ type: 'ask.position' }).then((value: unknown) => (position = asAskPosition(value)), () => undefined);
+    refresh();
+    window.addEventListener('focus', refresh);
     mountAskButton(
       document,
       (message) => void browser.runtime.sendMessage(message).catch(() => undefined),

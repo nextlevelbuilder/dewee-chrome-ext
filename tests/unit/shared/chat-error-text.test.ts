@@ -13,4 +13,8 @@ describe('chatErrorText', () => {
     expect(chatErrorText(t, { code: 'conflict', message: 'HTTP 409' })).toBe('t:error.conflict');
     expect(chatErrorText(t, { code: 'conflict' })).toBe('t:error.conflict');
   });
+  it('keeps the localized text for errors the extension makes up itself', () => {
+    expect(chatErrorText(t, { code: 'runtime_request_failed', message: 'Request failed' })).not.toBe('Request failed');
+    expect(chatErrorText(t, { code: 'history_changed', message: 'History changed' })).not.toBe('History changed');
+  });
 });

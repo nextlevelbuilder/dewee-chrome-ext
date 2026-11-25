@@ -735,7 +735,11 @@ export function errorText(t: Translate, code: string, retryAfterSeconds?: number
  * unavailable"), which says far more than "This changed on the server", so it is shown instead.
  * Server messages are fixed texts that never echo a submitted value (docs/api-contract.md).
  */
+/** Codes the extension makes up itself; their English message is not a server explanation. */
+const CLIENT_ERROR_CODES = new Set(['runtime_request_failed', 'request_failed', 'history_changed', 'network_error', 'aborted']);
+
 export function chatErrorText(t: Translate, error: { code: string; message?: string; retryAfterSeconds?: number }): string {
+  if (CLIENT_ERROR_CODES.has(error.code)) return errorText(t, error.code, error.retryAfterSeconds);
   const generic = error.code === 'conflict' || !hasMessage(`error.${error.code}`);
   const serverText = error.message?.trim();
   if (generic && serverText && serverText !== error.code && !/^HTTP \d+$/.test(serverText)) return serverText;
