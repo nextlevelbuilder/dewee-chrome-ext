@@ -51,6 +51,7 @@ import { grantExpired, isRestrictedUrl, LocalGuard, urlOrigin, type ControlState
 import { commandCancelSchema, deviceRevokedSchema, grantRevokedSchema, isExactOrigin, isValidDeviceName, RELAY_EVENTS, SHARED_TAB_TTL_MAX, type EventFrame, type Grant } from './protocol';
 import { BROWSER_PORT, type PanelState } from './panel-state';
 import { prefersVietnamese, TabMarker, type ActionApi } from './tab-marker';
+import { chromePresenceApi, type PresenceApi, type PresenceTab, TabPresence } from './tab-presence';
 import { TabRegistry } from './tabs';
 import { RelayError, RelayTransport, relayUrl, type SocketFactory, type TransportState } from './transport';
 
@@ -97,6 +98,8 @@ export interface SessionDeps {
   cdp?: ((options: CdpAdapterOptions) => AdvancedEngine) | null;
   /** The toolbar action, for the badge on agent-controlled tabs; null leaves tabs unmarked. */
   action?: ActionApi | null;
+  /** Tab group and in-page frame for agent-controlled tabs; null shows neither. */
+  presence?: PresenceApi | null;
   createSocket?: SocketFactory;
   token?(profileId: string): Promise<string>;
   /** Dewee Cloud BFF calls (relay ticket, workspace switch). */
@@ -230,6 +233,7 @@ export class BrowserSession {
   private readonly api: BrowserApi;
   private readonly guard: LocalGuard;
   private readonly marker: TabMarker | null;
+  private readonly presence: TabPresence | null;
   private readonly runner: CommandRunner;
   private readonly now: () => number;
   private syncing: Promise<unknown> = Promise.resolve();
@@ -247,6 +251,8 @@ export class BrowserSession {
     this.api = this.router;
     const action = deps.action === undefined ? chromeAction() : deps.action;
     this.marker = action ? new TabMarker(action, 'Open Dewee', () => prefersVietnamese(this.locale)) : null;
+    const presence = deps.presence === undefined ? chromePresenceApi() : deps.presence;
+    this.presence = presence ? new TabPresence(presence, () => prefersVietnamese(this.locale)) : null;
     this.guard = new LocalGuard(this.tabs, {
       hasHostPermission: (origin) => this.api.hasHostPermission(origin),
       tabUrl: async (tabId) => {
@@ -869,6 +875,7 @@ export class BrowserSession {
    * counts as leaving).
    */
   onTabUpdated(tabId: number, change: { status?: string; url?: string }): void {
+    if (change.status === 'complete') this.presence?.onPageLoaded(tabId);
     if (change.status !== 'loading' && change.url === undefined) return;
     const tab = this.tabs.byTabId(tabId);
     if (!tab) return;
@@ -889,6 +896,17 @@ export class BrowserSession {
     const cancelled = this.runner.cancelWhere((command) => tabOf(command.params) === tab.handle);
     // A shared tab is the person's own: using it pauses the agent only when it interrupts a command.
     if (this.control === 'active' && (!tab.shared || cancelled > 0)) void this.setControl('paused', 'takeover');
+  }
+
+  /**
+   * The person pressed Stop on the in-page frame of a controlled tab: a shared tab stops being
+   * shared; in a tab the agent opened, browser control stops on this device as with the panel's Stop.
+   */
+  onPageStop(tabId: number): void {
+    const tab = this.tabs.byTabId(tabId);
+    if (!tab) return;
+    if (tab.shared) void this.endShare(tab.grantId);
+    else void this.setControl('stopped');
   }
 
   // ---------- Debugger (Advanced build) ----------
@@ -1303,13 +1321,17 @@ export class BrowserSession {
 
   /** The toolbar badge on every tab an agent controls under a live grant. */
   private markTabs(): void {
-    if (!this.marker) return;
     const now = this.now();
     const marked = new Map<number, string>();
+    const present = new Map<number, PresenceTab>();
     for (const tab of this.tabs.all()) {
       const grant = this.grants.get(tab.grantId);
-      if (grant && !grantExpired(grant, now)) marked.set(tab.tabId, this.tabMeta.get(tab.handle)?.agentName ?? '');
+      if (!grant || grantExpired(grant, now)) continue;
+      const agentName = this.tabMeta.get(tab.handle)?.agentName ?? '';
+      marked.set(tab.tabId, agentName);
+      present.set(tab.tabId, { agentName, shared: Boolean(tab.shared) });
     }
-    this.marker.sync(marked);
+    this.marker?.sync(marked);
+    this.presence?.sync(present);
   }
 }

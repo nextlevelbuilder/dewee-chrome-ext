@@ -45,6 +45,14 @@ describe('runtime message routing', () => {
     expect(handled).not.toHaveBeenCalled();
   });
 
+  it('passes Stop from the in-page frame of a tab to the session only', () => {
+    const stop = vi.spyOn(BrowserSession.prototype, 'onPageStop').mockImplementation(() => undefined);
+    const handled = vi.spyOn(BrowserSession.prototype, 'handleRequest');
+    expect(onRuntimeMessage({ type: 'browser.pageStop' }, pageSender(), vi.fn())).toBe(false);
+    expect(stop).toHaveBeenCalledWith(7);
+    expect(handled).not.toHaveBeenCalled();
+  });
+
   it('routes browser requests from the side panel', async () => {
     const handled = vi.spyOn(BrowserSession.prototype, 'handleRequest').mockResolvedValue({ ok: true });
     const sendResponse = vi.fn();

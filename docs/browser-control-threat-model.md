@@ -65,3 +65,13 @@ Residual risks of Advanced mode: debugger input is trusted input, so sites that 
 - Synthetic events are not trusted events; some sites refuse them. That is a functional limit, not a bypass.
 - Revoking a shared tab while offline happens locally at once. The next attach to that profile and workspace returns the still-active remote grant and the extension revokes it before admitting commands. If that context never reconnects, the Gateway grant lapses at its expiry (at most 1 hour) and is never honoured by this browser again.
 - Reading the active tab's address relies on `activeTab` (toolbar click) or a site access the person granted earlier; otherwise the panel asks the person to click the toolbar icon first.
+
+## Presence indicators
+
+Every tab an agent controls under a live grant shows a pulsing purple frame and a "… is controlling this tab · Stop" label inside the page, and tabs the agent opened are gathered in a purple "Dewee AI" tab group (`src/browser/tab-presence.ts`, `src/browser/page-glow.ts`).
+
+- The frame is injected with `scripting.executeScript` only into controlled tabs, so only on origins the person granted. It lives in a closed shadow root in the extension's isolated world: the page cannot read or change its text or reach the Stop button. It reads nothing from the page and sends nothing but `browser.pageStop`.
+- Only a trusted click (`isTrusted`) sends Stop, and the service worker accepts it only from the top-level frame of a controlled tab. Stop can only reduce what the agent may do (end a share, or stop control on this device), so a page that fakes it gains nothing.
+- A page can remove the frame or draw a look-alike. Removal is undone by a mutation observer and on the next load; the toolbar badge and the side panel list stay the authoritative signals.
+- A shared tab is never moved into the group: it is the person's own tab. Only tabs the extension grouped are ungrouped when the agent lets go.
+

@@ -17,6 +17,7 @@ import { authorizationFor, renewFor, signIn, signOut } from './token-manager';
 const browserSession = new BrowserSession();
 /** Sent by the bundled watcher in an owned tab when the person clicks or types there. */
 const userInputSchema = z.object({ type: z.literal('browser.userInput') }).strict();
+const pageStopSchema = z.object({ type: z.literal('browser.pageStop') }).strict();
 
 function isBrowserRequest(request: BackgroundRequest): request is BrowserRequest {
   return request.type.startsWith('browser.');
@@ -62,6 +63,8 @@ export function onRuntimeMessage(message: unknown, sender: chrome.runtime.Messag
   if (isFromWebPage(sender)) {
     if (userInputSchema.safeParse(message).success) {
       if (sender.tab.id !== undefined) browserSession.onUserInput(sender.tab.id);
+    } else if (pageStopSchema.safeParse(message).success) {
+      if (sender.tab.id !== undefined) browserSession.onPageStop(sender.tab.id);
     } else if (handleAskPosition(message, sender, sendResponse as (position: unknown) => void)) {
       return true;
     } else {
