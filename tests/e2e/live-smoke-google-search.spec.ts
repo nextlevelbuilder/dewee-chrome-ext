@@ -51,7 +51,7 @@ test('mở google và search dewee: the agent drives the person’s Chrome', asy
   await expect(drawer.getByTestId('browser-grants').locator('li', { hasText: 'Super Agent' })).toContainText(GOOGLE);
   await drawer.getByRole('button', { name: 'Close' }).first().click();
 
-  const [opened, snapshot] = await turn(panel, 'mở google và search "dewee"', [
+  const [opened = '', snapshot = ''] = await turn(panel, 'mở google và search "dewee"', [
     browser({ action: 'open', targetUrl: GOOGLE }),
     browser({ action: 'snapshot', targetId: 't1' }),
   ]);
