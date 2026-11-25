@@ -167,6 +167,8 @@ test('an agent drives the person’s own Chrome only as far as the person allows
   await test.step('feature flag off: the tool refuses and nothing reaches the extension', async () => {
     const drawer = await openDrawer(panel);
     await expect(drawer.getByTestId('browser-status')).toHaveText('Connected');
+    // Self-hosted offers the same one-click share as Cloud, before any registration.
+    await expect(drawer.getByTestId('browser-share-button')).toHaveText('Let the agent use this tab');
     await drawer.getByRole('button', { name: 'Register this browser' }).click();
     await expect(drawer.getByText('Connected browsing is turned off for this workspace').first()).toBeVisible();
     await panel.screenshot({ path: `${SHOTS}/cb-1-flag-off.png` });
