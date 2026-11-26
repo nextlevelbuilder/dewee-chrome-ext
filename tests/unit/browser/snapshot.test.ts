@@ -126,7 +126,7 @@ describe('actions on refs', () => {
     const onInput = vi.fn();
     input.addEventListener('input', onInput);
     document.elementFromPoint = vi.fn(() => input);
-    expect(run({ op: 'type', generation: 1, ref, text: 'grace@example.com', submit: false })).toEqual({ ok: true, op: 'type' });
+    expect(run({ op: 'type', generation: 1, ref, text: 'grace@example.com', submit: false })).toEqual({ ok: true, op: 'type', value: 'grace@example.com', submitted: false });
     expect(input.value).toBe('grace@example.com');
     expect(onInput).toHaveBeenCalled();
   });
@@ -168,7 +168,7 @@ describe('actions on refs', () => {
         el.textContent = model;
       });
       const ref = refOf(snapshot(), 'Post text');
-      expect(run({ op: 'type', generation: 1, ref, text: 'hello world', submit: false })).toEqual({ ok: true, op: 'type' });
+      expect(run({ op: 'type', generation: 1, ref, text: 'hello world', submit: false })).toEqual({ ok: true, op: 'type', value: 'hello world', submitted: false });
       expect(el.textContent).toBe('hello world');
     });
 
@@ -183,6 +183,12 @@ describe('actions on refs', () => {
       const ref = refOf(snapshot(), 'Post text');
       run({ op: 'type', generation: 1, ref, text: 'abc', submit: false });
       expect(el.textContent).toBe('abc');
+    });
+
+    it('reports a submit on a rich editor without a form as not submitted', () => {
+      editor();
+      const ref = refOf(snapshot(), 'Post text');
+      expect(run({ op: 'type', generation: 1, ref, text: 'reply', submit: true })).toEqual({ ok: true, op: 'type', value: 'reply', submitted: false });
     });
 
     it('falls back to plain text when the editor did nothing', () => {

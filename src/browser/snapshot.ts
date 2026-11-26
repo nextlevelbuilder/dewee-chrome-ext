@@ -36,7 +36,9 @@ export type PageErrorCode = 'stale_ref' | 'element_not_found' | 'element_not_int
 export type PageResponse =
   | { ok: true; op: 'snapshot'; text: string; url: string; title: string }
   | { ok: true; op: 'describe'; role: string; name: string; sensitive: boolean; editable: boolean }
-  | { ok: true; op: 'click' | 'highlight' | 'type' | 'press' | 'scroll' | 'watch' }
+  | { ok: true; op: 'click' | 'highlight' | 'press' | 'scroll' | 'watch' }
+  /** value: the field's text afterwards, clipped; submitted: a form submit was requested (a synthetic Enter is not one). */
+  | { ok: true; op: 'type'; value?: string; submitted?: boolean }
   | { ok: true; op: 'findText'; found: boolean }
   /** `effect: 'maybe'`: the step failed after events had already been dispatched to the page. */
   | { ok: false; code: PageErrorCode; effect?: 'maybe' };
@@ -49,6 +51,8 @@ export function pageRun(request: PageRequest): PageResponse {
   const MUTATION_LIMIT = 200;
   const TEXT_LINE_MAX = 300;
   const VALUE_MAX = 200;
+  /** Mirrors TYPED_VALUE_MAX in protocol.ts (this function is serialized, so it cannot import it). */
+  const TYPED_VALUE_MAX = 2000;
 
   interface RefState {
     generation: number;
@@ -537,17 +541,20 @@ export function pageRun(request: PageRequest): PageResponse {
         } else {
           replaceEditableText(el, request.text);
         }
+        let submitted = false;
         if (request.submit) {
           const form = (el as HTMLInputElement).form;
           if (form) {
             if (typeof form.requestSubmit === 'function') form.requestSubmit();
             else form.submit();
+            submitted = true;
           } else {
             key(el, 'Enter', 'keydown');
             key(el, 'Enter', 'keyup');
           }
         }
-        return { ok: true, op: 'type' };
+        const now = tag === 'INPUT' || tag === 'TEXTAREA' ? (el as HTMLInputElement).value : editorText(el);
+        return { ok: true, op: 'type', value: now.length > TYPED_VALUE_MAX ? now.slice(0, TYPED_VALUE_MAX) : now, submitted };
       }
       case 'press': {
         const doc = document;

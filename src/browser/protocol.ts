@@ -254,6 +254,8 @@ export type MethodResult<M extends RelayMethod> = z.output<(typeof methodResultS
 // The Gateway withholds a page result without its `url` (it checks it against the grant), so a
 // result without a valid one is reported as `internal` instead, or as `outcome_unknown` after an
 // interaction (the action may have run).
+/** The longest field content a type result reports back. */
+export const TYPED_VALUE_MAX = 2000;
 const pageResult = z.object({ tab, url, title: z.string() }).strict();
 export const actionResultSchemas = {
   tabs: z.object({ tabs: z.array(z.object({ tab, url: z.string(), title: z.string(), active: z.boolean() }).strict()) }).strict(),
@@ -261,7 +263,8 @@ export const actionResultSchemas = {
   navigate: pageResult,
   snapshot: z.object({ tab, url, title: z.string(), generation, text: z.string().max(SNAPSHOT_MAX_CHARS) }).strict(),
   click: pageResult,
-  type: pageResult,
+  /** value: what the field contains afterwards (clipped); submitted: a form submit was requested. */
+  type: pageResult.extend({ value: z.string().max(TYPED_VALUE_MAX).optional(), submitted: z.boolean().optional() }).strict(),
   press: z.object({ tab }).strict(),
   scroll: z.object({ tab }).strict(),
   wait: z.object({ tab }).strict(),
