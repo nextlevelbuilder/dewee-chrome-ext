@@ -377,6 +377,46 @@ export function pageRun(request: PageRequest): PageResponse {
     el.dispatchEvent(new view.MouseEvent('mouseup', init));
   }
 
+  /** Whitespace-insensitive text of a rich editor, for checking what a step left in it. */
+  function editorText(el: Element): string {
+    return ((el as HTMLElement).innerText ?? el.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  function selectAllIn(el: Element) {
+    const doc = el.ownerDocument;
+    const selection = doc.getSelection();
+    const range = doc.createRange();
+    range.selectNodeContents(el);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  /**
+   * Replaces the text of a contenteditable editor. insertText goes through the editor's own input
+   * handling (Draft.js, Lexical, ProseMirror). Those editors often cancel the native insertion and
+   * apply it themselves, so execCommand reports false although the text is in: writing textContent
+   * then would insert it a second time. The plain-text fallback runs only when nothing changed, and a
+   * doubled or partial result is replaced once more through the editor.
+   */
+  function replaceEditableText(el: Element, text: string) {
+    const doc = el.ownerDocument;
+    const want = text.replace(/\s+/g, ' ').trim();
+    const before = editorText(el);
+    selectAllIn(el);
+    const canExec = typeof doc.execCommand === 'function';
+    const inserted = canExec && (text ? doc.execCommand('insertText', false, text) : doc.execCommand('delete'));
+    if (!inserted && editorText(el) === before && before !== want) {
+      el.textContent = text;
+      el.dispatchEvent(new (doc.defaultView ?? window).Event('input', { bubbles: true, composed: true }));
+      return;
+    }
+    if (canExec && editorText(el) !== want) {
+      selectAllIn(el);
+      doc.execCommand('delete');
+      if (text) doc.execCommand('insertText', false, text);
+    }
+  }
+
   function setValue(el: Element, text: string) {
     const view = el.ownerDocument.defaultView ?? window;
     const proto = tagOf(el) === 'TEXTAREA' ? view.HTMLTextAreaElement.prototype : view.HTMLInputElement.prototype;
@@ -495,18 +535,7 @@ export function pageRun(request: PageRequest): PageResponse {
         if (tag === 'INPUT' || tag === 'TEXTAREA') {
           setValue(el, request.text);
         } else {
-          const doc = el.ownerDocument;
-          const selection = doc.getSelection();
-          const range = doc.createRange();
-          range.selectNodeContents(el);
-          selection?.removeAllRanges();
-          selection?.addRange(range);
-          // insertText goes through the editor's own input handling; fall back to plain text.
-          const inserted = typeof doc.execCommand === 'function' && doc.execCommand('insertText', false, request.text);
-          if (!inserted) {
-            el.textContent = request.text;
-            el.dispatchEvent(new (doc.defaultView ?? window).Event('input', { bubbles: true, composed: true }));
-          }
+          replaceEditableText(el, request.text);
         }
         if (request.submit) {
           const form = (el as HTMLInputElement).form;
@@ -539,6 +568,9 @@ export function pageRun(request: PageRequest): PageResponse {
             next?.focus();
           } else if (request.key === 'Backspace' && editing && (tagOf(target) === 'INPUT' || tagOf(target) === 'TEXTAREA')) {
             if (!isSensitive(target)) setValue(target, (target as HTMLInputElement).value.slice(0, -1));
+          } else if (request.key === 'Backspace' && editing) {
+            // Rich editors (contenteditable) delete through their own input handling.
+            if (typeof target.ownerDocument.execCommand === 'function') target.ownerDocument.execCommand('delete');
           } else if (!editing) {
             const delta: Partial<Record<PressKey, number>> = { PageDown: page, PageUp: -page, ArrowDown: 40, ArrowUp: -40, ArrowRight: 0, ArrowLeft: 0 };
             if (request.key === 'Home') window.scrollTo({ top: 0 });
