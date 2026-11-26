@@ -191,6 +191,26 @@ describe('actions on refs', () => {
       expect(run({ op: 'type', generation: 1, ref, text: 'reply', submit: true })).toEqual({ ok: true, op: 'type', value: 'reply', submitted: false });
     });
 
+    it('reports a submit as sent when the page clears the editor on Enter', () => {
+      const el = editor();
+      el.addEventListener('keydown', (event) => {
+        if ((event as KeyboardEvent).key === 'Enter') el.textContent = '';
+      });
+      const ref = refOf(snapshot(), 'Post text');
+      expect(run({ op: 'type', generation: 1, ref, text: 'reply', submit: true })).toEqual({ ok: true, op: 'type', value: '', submitted: true });
+    });
+
+    it('does not retype text the editor already holds', () => {
+      const el = editor();
+      el.textContent = 'same';
+      const exec = vi.fn((_command: string) => false);
+      document.execCommand = exec as unknown as typeof document.execCommand;
+      const ref = refOf(snapshot(), 'Post text');
+      run({ op: 'type', generation: 1, ref, text: 'same', submit: false });
+      expect(exec.mock.calls.filter(([command]) => command === 'delete')).toHaveLength(0);
+      expect(el.textContent).toBe('same');
+    });
+
     it('leaves an editor that rewrote the text alone', () => {
       const el = editor();
       const exec = vi.fn((command: string, _ui?: boolean, value?: string) => {

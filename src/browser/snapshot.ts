@@ -419,7 +419,7 @@ export function pageRun(request: PageRequest): PageResponse {
     // smart quotes) is left alone, so the retry never deletes at a caret somewhere else.
     const after = editorText(el);
     const doubled = want !== '' && after.split(want).length > 2;
-    const lost = want !== '' && after === before;
+    const lost = want !== '' && before !== want && after === before;
     const live = el.isConnected && el.contains(doc.activeElement);
     if (canExec && live && (doubled || lost)) {
       selectAllIn(el);
@@ -562,6 +562,9 @@ export function pageRun(request: PageRequest): PageResponse {
           }
         }
         const now = tag === 'INPUT' || tag === 'TEXTAREA' ? (el as HTMLInputElement).value : editorText(el);
+        // Without a form, a page that accepted the Enter usually clears or removes the field: report
+        // that as sent, so the agent does not click send again and post twice.
+        if (request.submit && !(el as HTMLInputElement).form && request.text.trim() !== '' && (!el.isConnected || now.trim() === '')) submitted = true;
         // Clip by code points, so an emoji is never cut in half.
         const chars = Array.from(now);
         return { ok: true, op: 'type', value: chars.length > TYPED_VALUE_MAX ? chars.slice(0, TYPED_VALUE_MAX).join('') : now, submitted };
