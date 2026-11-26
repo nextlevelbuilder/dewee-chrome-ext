@@ -414,7 +414,14 @@ export function pageRun(request: PageRequest): PageResponse {
       el.dispatchEvent(new (doc.defaultView ?? window).Event('input', { bubbles: true, composed: true }));
       return;
     }
-    if (canExec && editorText(el) !== want) {
+    // Retry only a clear doubling or a lost insertion, and only while the element is still the live,
+    // focused editor: an editor that re-rendered (new node) or rewrote the text (emoji, mentions,
+    // smart quotes) is left alone, so the retry never deletes at a caret somewhere else.
+    const after = editorText(el);
+    const doubled = want !== '' && after.split(want).length > 2;
+    const lost = want !== '' && after === before;
+    const live = el.isConnected && el.contains(doc.activeElement);
+    if (canExec && live && (doubled || lost)) {
       selectAllIn(el);
       doc.execCommand('delete');
       if (text) doc.execCommand('insertText', false, text);
@@ -545,16 +552,19 @@ export function pageRun(request: PageRequest): PageResponse {
         if (request.submit) {
           const form = (el as HTMLInputElement).form;
           if (form) {
+            // requestSubmit does nothing when validation fails: report only a submit that can happen.
+            submitted = form.checkValidity();
             if (typeof form.requestSubmit === 'function') form.requestSubmit();
             else form.submit();
-            submitted = true;
           } else {
             key(el, 'Enter', 'keydown');
             key(el, 'Enter', 'keyup');
           }
         }
         const now = tag === 'INPUT' || tag === 'TEXTAREA' ? (el as HTMLInputElement).value : editorText(el);
-        return { ok: true, op: 'type', value: now.length > TYPED_VALUE_MAX ? now.slice(0, TYPED_VALUE_MAX) : now, submitted };
+        // Clip by code points, so an emoji is never cut in half.
+        const chars = Array.from(now);
+        return { ok: true, op: 'type', value: chars.length > TYPED_VALUE_MAX ? chars.slice(0, TYPED_VALUE_MAX).join('') : now, submitted };
       }
       case 'press': {
         const doc = document;

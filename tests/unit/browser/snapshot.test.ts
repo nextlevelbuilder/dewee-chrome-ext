@@ -191,6 +191,26 @@ describe('actions on refs', () => {
       expect(run({ op: 'type', generation: 1, ref, text: 'reply', submit: true })).toEqual({ ok: true, op: 'type', value: 'reply', submitted: false });
     });
 
+    it('leaves an editor that rewrote the text alone', () => {
+      const el = editor();
+      const exec = vi.fn((command: string, _ui?: boolean, value?: string) => {
+        if (command === 'insertText') el.textContent = (value ?? '').replace(':)', '🙂');
+        return true;
+      });
+      (document as unknown as { execCommand: unknown }).execCommand = exec;
+      const ref = refOf(snapshot(), 'Post text');
+      expect(run({ op: 'type', generation: 1, ref, text: 'hi :)', submit: false })).toMatchObject({ value: 'hi 🙂' });
+      expect(exec).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not report a submit that form validation blocks', () => {
+      document.body.insertAdjacentHTML('beforeend', '<form id="f"><label for="q">Query</label><input id="q"><input required name="r"></form>');
+      const input = document.getElementById('q') as HTMLInputElement;
+      document.elementFromPoint = vi.fn(() => input);
+      const ref = refOf(snapshot(), 'Query');
+      expect(run({ op: 'type', generation: 1, ref, text: 'x', submit: true })).toMatchObject({ submitted: false });
+    });
+
     it('falls back to plain text when the editor did nothing', () => {
       const el = editor();
       const ref = refOf(snapshot(), 'Post text');
