@@ -5,6 +5,9 @@ import { permissionsFor, profileFromEnv } from './src/shared/build-profile';
 // End-to-end builds pre-grant loopback hosts so Playwright never meets Chrome's permission prompt,
 // and go to their own folder so they cannot be zipped or shipped by mistake.
 const e2e = process.env.DEWEE_E2E === '1';
+// E2E builds only: extra hosts granted up front (Playwright cannot answer Chrome's permission prompt),
+// for example `DEWEE_E2E_HOSTS=https://www.google.com/*` for the live Google smoke test.
+const e2eHosts = e2e ? (process.env.DEWEE_E2E_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean) : [];
 // The Chrome Web Store refuses a manifest with `key` and assigns its own ID, so store builds drop it.
 const store = process.env.DEWEE_STORE === '1';
 // Standard (default) or Advanced (adds the `debugger` permission); see src/shared/build-profile.ts.
@@ -46,7 +49,7 @@ export default defineConfig({
     // Gateway origins are requested at runtime, one origin at a time, after the user adds a profile.
     // "Ask Dewee" on selected text asks for https://*/* when it is turned on in Settings.
     optional_host_permissions: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],
-    ...(e2e ? { host_permissions: ['http://localhost/*', 'http://127.0.0.1/*'] } : {}),
+    ...(e2e ? { host_permissions: ['http://localhost/*', 'http://127.0.0.1/*', ...e2eHosts] } : {}),
     icons: { 16: 'icons/16.png', 32: 'icons/32.png', 48: 'icons/48.png', 128: 'icons/128.png' },
     action: { default_title: 'Open Dewee', default_icon: { 16: 'icons/16.png', 32: 'icons/32.png' } },
     // The action opens the side panel (setPanelBehavior), so this shortcut opens it too.

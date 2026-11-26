@@ -167,6 +167,8 @@ test('an agent drives the person’s own Chrome only as far as the person allows
   await test.step('feature flag off: the tool refuses and nothing reaches the extension', async () => {
     const drawer = await openDrawer(panel);
     await expect(drawer.getByTestId('browser-status')).toHaveText('Connected');
+    // Self-hosted offers the same one-click share as Cloud, before any registration.
+    await expect(drawer.getByTestId('browser-share-button')).toHaveText('Let the agent use this tab');
     await drawer.getByRole('button', { name: 'Register this browser' }).click();
     await expect(drawer.getByText('Connected browsing is turned off for this workspace').first()).toBeVisible();
     await panel.screenshot({ path: `${SHOTS}/cb-1-flag-off.png` });
@@ -237,6 +239,13 @@ test('an agent drives the person’s own Chrome only as far as the person allows
     const page = sitePage()!;
     await expect(page.locator('#status')).toHaveText('Clicked next');
     await expect(page.locator('#email')).toHaveValue(typed);
+    // The controlled tab shows the in-page frame and sits in the "Dewee AI" tab group.
+    await expect(page.locator('#dewee-agent-presence')).toHaveCount(1);
+    const group = await panel.evaluate(async () => {
+      const [tab] = await chrome.tabs.query({ url: '*://*/account*' });
+      return tab && tab.groupId >= 0 ? (await chrome.tabGroups.get(tab.groupId)).title : null;
+    });
+    expect(group).toBe('Dewee AI');
     await page.screenshot({ path: `${SHOTS}/cb-3-page-after.png` });
   });
 
@@ -269,6 +278,7 @@ test('an agent drives the person’s own Chrome only as far as the person allows
     await closeDrawer(panel);
     const [result] = await ask(panel, 'cb revoked', [browserCall({ action: 'snapshot', targetId: 't1' })]);
     expect(result).toContain('connected browser error [grant_revoked]');
+    await expect(sitePage()!.locator('#dewee-agent-presence')).toHaveCount(0);
   });
 
   await test.step('Stop refuses commands with device_paused until Resume', async () => {

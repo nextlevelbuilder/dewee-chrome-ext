@@ -5,6 +5,7 @@
  */
 import { browser } from 'wxt/browser';
 import { z } from 'zod';
+import { ASK_BUTTON_POSITIONS } from '@/protocol/ask-selection';
 
 export const SETTINGS_KEY = 'settings';
 
@@ -52,8 +53,10 @@ const settingsSchema = z.object({
       askOnSelection: z.boolean().default(false),
       /** Let granted Dewee agents drive tabs in this browser (self-hosted Gateway only). Off: no relay socket is opened. */
       connectedBrowser: z.boolean().default(false),
+      /** Where the "Ask Dewee" button sits around the selection; a fixed side avoids other extensions' popups. */
+      askButtonPosition: z.enum(ASK_BUTTON_POSITIONS).catch('auto').default('auto'),
     })
-    .default({ theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false, askOnSelection: false, connectedBrowser: false }),
+    .default({ theme: 'system', locale: 'auto', showReasoning: false, showToolDetails: false, askOnSelection: false, connectedBrowser: false, askButtonPosition: 'auto' }),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -68,7 +71,8 @@ export async function loadSettings(): Promise<Settings> {
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
-  await browser.storage.local.set({ [SETTINGS_KEY]: settingsSchema.parse(settings) });
+  const parsed = settingsSchema.parse(settings);
+  await browser.storage.local.set({ [SETTINGS_KEY]: parsed });
 }
 
 let writes: Promise<unknown> = Promise.resolve();

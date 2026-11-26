@@ -32,6 +32,7 @@ first. You can pause, stop or revoke access in the side panel at any time.
 - `storage`: keeps the settings and data listed above.
 - `identity`: opens the Dewee Cloud sign-in page.
 - `alarms`: refreshes the pending-request badge and sign-in tokens in the background.
+- `tabGroups`: names and colours the "Dewee AI" group that holds the tabs an agent opened, so you can see them on the tab strip.
 - `activeTab`: lets the side panel see the address of the tab in front when you open Dewee, so it can offer "Let the agent use this tab". Nothing is read until you press it.
 - `scripting`: runs the extension's own bundled script, only in tabs an approved agent opened on sites you granted or the tab you shared, and
   for the optional Ask Dewee button. The extension does not run code it receives from the network.

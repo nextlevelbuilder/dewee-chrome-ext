@@ -155,7 +155,7 @@ sends later commands on that tab under that grant only; a tab no grant opened is
 | `navigate` | interact | `{tab, url}` | `{tab, url, title}` |
 | `snapshot` | read | `{tab, max_chars?}` (default 20000, max 60000) | `{tab, url, title, generation, text}` |
 | `click` | interact | `{tab, ref, generation}` | `{tab, url, title}` |
-| `type` | interact | `{tab, ref, generation, text, submit?}` | `{tab, url, title}` |
+| `type` | interact | `{tab, ref, generation, text, submit?}` | `{tab, url, title, value?, submitted?}`: `value` is the field text afterwards (at most 2000 chars), `submitted` whether a form submit was requested (a synthetic Enter in a rich editor is not one) |
 | `press` | interact | `{tab, key}` (Enter, Tab, Escape, ArrowUp/Down/Left/Right, Backspace, PageUp/PageDown, Home, End) | `{tab}` |
 | `scroll` | read | `{tab, direction:"up"\|"down", amount?:"page"\|"half"}` | `{tab}` |
 | `wait` | read | `{tab, ms}` (≤ 10000) or `{tab, text}` (appears within 10 s) | `{tab}` |

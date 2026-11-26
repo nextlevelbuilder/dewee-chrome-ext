@@ -4,7 +4,7 @@
  * extension runs nothing in web pages.
  */
 import { browser } from 'wxt/browser';
-import { ASK_DRAFT_KEY, ASK_ORIGINS, askSelectionSchema, formatAskDraft, type AskDraft } from '@/protocol/ask-selection';
+import { ASK_DRAFT_KEY, ASK_ORIGINS, askPositionRequestSchema, askSelectionSchema, type AskButtonPosition, formatAskDraft, type AskDraft } from '@/protocol/ask-selection';
 import { loadSettings } from '@/shared/settings';
 
 export const ASK_SCRIPT_ID = 'ask-dewee';
@@ -80,5 +80,15 @@ export function handleAskSelection(message: unknown, sender: chrome.runtime.Mess
     const draft: AskDraft = { id: crypto.randomUUID(), text: formatAskDraft({ ...parsed.data, url: sender.tab.url ?? parsed.data.url }), createdAt: Date.now(), windowId };
     await browser.storage.session.set({ [ASK_DRAFT_KEY]: draft });
   })().catch(() => undefined);
+  return true;
+}
+
+/** Answers the page script's `ask.position` request with the button placement only. Returns false for anything else. */
+export function handleAskPosition(message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (position: AskButtonPosition) => void): boolean {
+  if (!isFromWebPage(sender) || !askPositionRequestSchema.safeParse(message).success) return false;
+  void loadSettings().then(
+    (s) => sendResponse(s.prefs.askButtonPosition),
+    () => sendResponse('auto'),
+  );
   return true;
 }

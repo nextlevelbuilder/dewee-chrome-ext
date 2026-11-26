@@ -112,7 +112,7 @@ const en = {
   'error.protocol_error': 'The reply could not be read because a part of it was too large.',
   'error.delivery_unconfirmed': 'Delivery could not be confirmed. The message may have reached Dewee and may still be answered, so check the conversation before sending it again.',
   'error.runtime_unavailable': 'Dewee is temporarily unavailable.',
-  'error.run_in_progress': 'This conversation is still running.',
+  'error.run_in_progress': 'The previous reply in this conversation is still running. Wait a moment, then send again.',
   'error.action_closed': 'This request is already closed.',
   'error.action_in_progress': 'This request is being processed.',
   'error.response_conflict': 'This request was answered differently. Reloaded.',
@@ -195,6 +195,13 @@ const en = {
   'settings.askOnSelection': 'Ask Dewee about selected text',
   'settings.askOnSelection.hint': 'Shows an Ask Dewee button when you select text on a web page. Clicking it opens the side panel with the quote, page title and address in the message box; nothing is sent until you press Send. Needs access to websites; applies to pages opened after turning it on. Turning it off removes the button; to remove site access too, use Chrome’s extension settings.',
   'settings.askOnSelection.denied': 'Chrome did not grant website access, so the button stays off.',
+  'settings.askPosition': 'Button position',
+  'settings.askPosition.hint': 'Pick a fixed side if the button covers another extension, such as Google Translate.',
+  'settings.askPosition.auto': 'Automatic',
+  'settings.askPosition.top': 'Above the selection',
+  'settings.askPosition.bottom': 'Below the selection',
+  'settings.askPosition.left': 'Left of the selection',
+  'settings.askPosition.right': 'Right of the selection',
   'settings.showReasoning': 'Show reasoning',
   'settings.showReasoning.hint': 'Show the agent’s thinking under each reply, collapsed.',
   'settings.showToolDetails': 'Show tool call details',
@@ -452,7 +459,7 @@ const vi: Record<MessageKey, string> = {
   'error.protocol_error': 'Không đọc được câu trả lời vì một phần quá lớn.',
   'error.delivery_unconfirmed': 'Không thể xác nhận tin nhắn đã được gửi. Tin nhắn có thể đã đến Dewee và vẫn sẽ có câu trả lời, nên hãy kiểm tra cuộc trò chuyện trước khi gửi lại.',
   'error.runtime_unavailable': 'Dewee tạm thời không khả dụng.',
-  'error.run_in_progress': 'Cuộc trò chuyện này vẫn đang chạy.',
+  'error.run_in_progress': 'Câu trả lời trước trong cuộc trò chuyện này vẫn đang chạy. Chờ một chút rồi gửi lại.',
   'error.action_closed': 'Yêu cầu này đã đóng.',
   'error.action_in_progress': 'Yêu cầu này đang được xử lý.',
   'error.response_conflict': 'Yêu cầu này đã được trả lời khác. Đã tải lại.',
@@ -535,6 +542,13 @@ const vi: Record<MessageKey, string> = {
   'settings.askOnSelection': 'Hỏi Dewee về đoạn văn bản đã chọn',
   'settings.askOnSelection.hint': 'Hiện nút Hỏi Dewee khi bạn bôi đen văn bản trên trang web. Bấm nút sẽ mở side panel, đưa trích dẫn, tiêu đề và địa chỉ trang vào ô nhập; không gửi gì cho tới khi bạn bấm Gửi. Cần quyền truy cập website; áp dụng cho các trang mở sau khi bật. Tắt sẽ gỡ nút; muốn thu hồi cả quyền truy cập website, dùng phần cài đặt extension của Chrome.',
   'settings.askOnSelection.denied': 'Chrome chưa cấp quyền truy cập website nên nút vẫn tắt.',
+  'settings.askPosition': 'Vị trí nút',
+  'settings.askPosition.hint': 'Chọn một phía cố định nếu nút che mất extension khác, ví dụ Google Dịch.',
+  'settings.askPosition.auto': 'Tự động',
+  'settings.askPosition.top': 'Phía trên đoạn chọn',
+  'settings.askPosition.bottom': 'Phía dưới đoạn chọn',
+  'settings.askPosition.left': 'Bên trái đoạn chọn',
+  'settings.askPosition.right': 'Bên phải đoạn chọn',
   'settings.showReasoning': 'Hiện phần suy luận',
   'settings.showReasoning.hint': 'Hiện suy nghĩ của agent bên dưới mỗi câu trả lời, ở dạng thu gọn.',
   'settings.showToolDetails': 'Hiện chi tiết tool call',
@@ -713,4 +727,21 @@ export function errorText(t: Translate, code: string, retryAfterSeconds?: number
   const key = `error.${code}`;
   if (hasMessage(key)) return t(key, { seconds: retryAfterSeconds ?? 30 });
   return t('error.generic', { code });
+}
+
+/**
+ * Text for a failed chat turn. A known code keeps its localized text. A generic 409 (`conflict`)
+ * or an unknown code carries the server's own fixed explanation (for example "the AI provider is
+ * unavailable"), which says far more than "This changed on the server", so it is shown instead.
+ * Server messages are fixed texts that never echo a submitted value (docs/api-contract.md).
+ */
+/** Codes the extension makes up itself; their English message is not a server explanation. */
+const CLIENT_ERROR_CODES = new Set(['runtime_request_failed', 'request_failed', 'history_changed', 'network_error', 'aborted']);
+
+export function chatErrorText(t: Translate, error: { code: string; message?: string; retryAfterSeconds?: number }): string {
+  if (CLIENT_ERROR_CODES.has(error.code)) return errorText(t, error.code, error.retryAfterSeconds);
+  const generic = error.code === 'conflict' || !hasMessage(`error.${error.code}`);
+  const serverText = error.message?.trim();
+  if (generic && serverText && serverText !== error.code && !/^HTTP \d+$/.test(serverText)) return serverText;
+  return errorText(t, error.code, error.retryAfterSeconds);
 }

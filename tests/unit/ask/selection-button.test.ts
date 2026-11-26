@@ -1,4 +1,4 @@
-import { mountAskButton, selectedText } from '../../../src/ask/selection-button';
+import { mountAskButton, placeButton, selectedText } from '../../../src/ask/selection-button';
 import type { AskSelection } from '../../../src/protocol/ask-selection';
 
 function select(node: Node) {
@@ -34,6 +34,27 @@ describe('Ask Dewee button', () => {
   afterEach(() => {
     mounted?.dispose();
     document.getSelection()?.removeAllRanges();
+  });
+
+  it('hides when the selection is cleared without a click it can see', async () => {
+    select(document.getElementById('text')!);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await flush();
+    expect(mounted!.button.hidden).toBe(false);
+    document.getSelection()!.removeAllRanges();
+    document.dispatchEvent(new Event('selectionchange'));
+    expect(mounted!.button.hidden).toBe(true);
+  });
+
+  it('hides on a press outside even when the page stops it on the document', async () => {
+    select(document.getElementById('text')!);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await flush();
+    const stop = (e: Event) => e.stopImmediatePropagation();
+    document.addEventListener('mousedown', stop, true);
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    document.removeEventListener('mousedown', stop, true);
+    expect(mounted!.button.hidden).toBe(true);
   });
 
   it('shows after a selection and sends the text, address and title once on click', async () => {
@@ -104,5 +125,25 @@ describe('Ask Dewee button defaults', () => {
     mounted.button.click();
     expect(sent).toEqual([]);
     mounted.dispose();
+  });
+
+});
+
+describe('placeButton', () => {
+  const rect = { top: 300, bottom: 320, left: 400, right: 600 };
+  const view = { width: 1200, height: 800 };
+  it('puts the button on the chosen side of the selection', () => {
+    expect(placeButton(rect, 'top', view).top).toBeLessThan(rect.top);
+    expect(placeButton(rect, 'bottom', view).top).toBeGreaterThan(rect.bottom);
+    expect(placeButton(rect, 'left', view).left).toBeLessThan(rect.left);
+    expect(placeButton(rect, 'right', view).left).toBeGreaterThan(rect.right);
+  });
+  it('keeps every placement inside the viewport', () => {
+    const edge = { top: 2, bottom: 14, left: 2, right: 20 };
+    for (const p of ['auto', 'top', 'bottom', 'left', 'right'] as const) {
+      const at = placeButton(edge, p, { width: 300, height: 200 });
+      expect(at.top).toBeGreaterThanOrEqual(8);
+      expect(at.left).toBeGreaterThanOrEqual(8);
+    }
   });
 });

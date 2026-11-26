@@ -250,9 +250,17 @@ export class Executor {
         context.sideEffect = true;
         const request: DriverRequest =
           command.action === 'click' ? { op: 'click', origins, generation, ref } : { op: 'type', origins, generation, ref, text: command.params.text, submit };
-        await this.page(tab.tabId, request, signal);
+        const done = await this.page(tab.tabId, request, signal);
         await this.settle(tab.tabId, signal, command);
-        return this.landed(tab, grant);
+        const page = await this.landed(tab, grant);
+        // The Standard adapter reports what the field holds now, so the agent can check its text
+        // without another snapshot, and whether a form submit actually happened.
+        if (done.op !== 'type') return page;
+        return {
+          ...page,
+          ...(done.value !== undefined ? { value: done.value } : {}),
+          ...(done.submitted !== undefined ? { submitted: done.submitted } : {}),
+        };
       }
       case 'press': {
         await this.watch(tab.tabId, grant);

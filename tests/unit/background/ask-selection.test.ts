@@ -1,5 +1,5 @@
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { handleAskSelection, isFromExtensionPage, isFromWebPage, syncAskScript } from '../../../src/background/ask-selection';
+import { handleAskPosition, handleAskSelection, isFromExtensionPage, isFromWebPage, syncAskScript } from '../../../src/background/ask-selection';
 import { ASK_DRAFT_KEY } from '../../../src/protocol/ask-selection';
 import { saveSettings, defaultSettings } from '../../../src/shared/settings';
 
@@ -116,5 +116,19 @@ describe('a page script left over after the feature is turned off', () => {
     expect(await syncAskScript()).toBe(false);
     expect(handleAskSelection(message, pageSender())).toBe(false);
     expect(chromeStub.sidePanel.open).not.toHaveBeenCalled();
+  });
+});
+describe('handleAskPosition', () => {
+  it('answers a top-level page with the button placement only', async () => {
+    const settings = defaultSettings();
+    await saveSettings({ ...settings, prefs: { ...settings.prefs, askButtonPosition: 'left' } });
+    const answer = await new Promise<unknown>((resolve) => expect(handleAskPosition({ type: 'ask.position' }, pageSender(), resolve)).toBe(true));
+    expect(answer).toBe('left');
+  });
+  it('ignores other senders and messages', () => {
+    const reply = vi.fn();
+    expect(handleAskPosition({ type: 'ask.position' }, pageSender({ frameId: 2 }), reply)).toBe(false);
+    expect(handleAskPosition({ type: 'settings' }, pageSender(), reply)).toBe(false);
+    expect(reply).not.toHaveBeenCalled();
   });
 });

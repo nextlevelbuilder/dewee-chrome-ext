@@ -126,9 +126,126 @@ describe('actions on refs', () => {
     const onInput = vi.fn();
     input.addEventListener('input', onInput);
     document.elementFromPoint = vi.fn(() => input);
-    expect(run({ op: 'type', generation: 1, ref, text: 'grace@example.com', submit: false })).toEqual({ ok: true, op: 'type' });
+    expect(run({ op: 'type', generation: 1, ref, text: 'grace@example.com', submit: false })).toEqual({ ok: true, op: 'type', value: 'grace@example.com', submitted: false });
     expect(input.value).toBe('grace@example.com');
     expect(onInput).toHaveBeenCalled();
+  });
+
+  describe('rich editors (contenteditable)', () => {
+    function editor(): HTMLElement {
+      document.body.insertAdjacentHTML('beforeend', '<div id="ed" contenteditable="true" role="textbox" aria-label="Post text"></div>');
+      const el = document.getElementById('ed') as HTMLElement;
+      // jsdom has no innerText: mirror textContent.
+      Object.defineProperty(el, 'innerText', { configurable: true, get: () => el.textContent ?? '' });
+      document.elementFromPoint = vi.fn(() => el);
+      return el;
+    }
+    /** An editor like Draft.js: it cancels the native insertion, applies it itself and reports false. */
+    function selfHandlingEditor(el: HTMLElement) {
+      const exec = vi.fn((command: string, _ui?: boolean, value?: string) => {
+        if (command === 'insertText') el.textContent = value ?? '';
+        if (command === 'delete') el.textContent = '';
+        return false;
+      });
+      (document as unknown as { execCommand: unknown }).execCommand = exec;
+      return exec;
+    }
+
+    afterEach(() => {
+      delete (document as unknown as { execCommand?: unknown }).execCommand;
+    });
+
+    it('does not insert the text twice when the editor applies it and execCommand reports false', () => {
+      const el = editor();
+      // Like Draft.js: the editor keeps its own state, and a raw DOM edit is read back as new input on top of it.
+      let model = '';
+      (document as unknown as { execCommand: unknown }).execCommand = vi.fn((command: string, _ui?: boolean, value?: string) => {
+        if (command === 'insertText') el.textContent = model = value ?? '';
+        return false;
+      });
+      el.addEventListener('input', () => {
+        model += el.textContent ?? '';
+        el.textContent = model;
+      });
+      const ref = refOf(snapshot(), 'Post text');
+      expect(run({ op: 'type', generation: 1, ref, text: 'hello world', submit: false })).toEqual({ ok: true, op: 'type', value: 'hello world', submitted: false });
+      expect(el.textContent).toBe('hello world');
+    });
+
+    it('replaces a doubled insertion once through the editor', () => {
+      const el = editor();
+      let calls = 0;
+      (document as unknown as { execCommand: unknown }).execCommand = vi.fn((command: string, _ui?: boolean, value?: string) => {
+        if (command === 'delete') el.textContent = '';
+        if (command === 'insertText') el.textContent = (el.textContent ?? '') + (calls++ === 0 ? `${value}${value}` : value);
+        return true;
+      });
+      const ref = refOf(snapshot(), 'Post text');
+      run({ op: 'type', generation: 1, ref, text: 'abc', submit: false });
+      expect(el.textContent).toBe('abc');
+    });
+
+    it('reports a submit on a rich editor without a form as not submitted', () => {
+      editor();
+      const ref = refOf(snapshot(), 'Post text');
+      expect(run({ op: 'type', generation: 1, ref, text: 'reply', submit: true })).toEqual({ ok: true, op: 'type', value: 'reply', submitted: false });
+    });
+
+    it('reports a submit as sent when the page clears the editor on Enter', () => {
+      const el = editor();
+      el.addEventListener('keydown', (event) => {
+        if ((event as KeyboardEvent).key === 'Enter') el.textContent = '';
+      });
+      const ref = refOf(snapshot(), 'Post text');
+      expect(run({ op: 'type', generation: 1, ref, text: 'reply', submit: true })).toEqual({ ok: true, op: 'type', value: '', submitted: true });
+    });
+
+    it('does not retype text the editor already holds', () => {
+      const el = editor();
+      el.textContent = 'same';
+      const exec = vi.fn((_command: string) => false);
+      document.execCommand = exec as unknown as typeof document.execCommand;
+      const ref = refOf(snapshot(), 'Post text');
+      run({ op: 'type', generation: 1, ref, text: 'same', submit: false });
+      expect(exec.mock.calls.filter(([command]) => command === 'delete')).toHaveLength(0);
+      expect(el.textContent).toBe('same');
+    });
+
+    it('leaves an editor that rewrote the text alone', () => {
+      const el = editor();
+      const exec = vi.fn((command: string, _ui?: boolean, value?: string) => {
+        if (command === 'insertText') el.textContent = (value ?? '').replace(':)', '🙂');
+        return true;
+      });
+      (document as unknown as { execCommand: unknown }).execCommand = exec;
+      const ref = refOf(snapshot(), 'Post text');
+      expect(run({ op: 'type', generation: 1, ref, text: 'hi :)', submit: false })).toMatchObject({ value: 'hi 🙂' });
+      expect(exec).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not report a submit that form validation blocks', () => {
+      document.body.insertAdjacentHTML('beforeend', '<form id="f"><label for="q">Query</label><input id="q"><input required name="r"></form>');
+      const input = document.getElementById('q') as HTMLInputElement;
+      document.elementFromPoint = vi.fn(() => input);
+      const ref = refOf(snapshot(), 'Query');
+      expect(run({ op: 'type', generation: 1, ref, text: 'x', submit: true })).toMatchObject({ submitted: false });
+    });
+
+    it('falls back to plain text when the editor did nothing', () => {
+      const el = editor();
+      const ref = refOf(snapshot(), 'Post text');
+      run({ op: 'type', generation: 1, ref, text: 'plain', submit: false });
+      expect(el.textContent).toBe('plain');
+    });
+
+    it('deletes with Backspace through the editor', () => {
+      const el = editor();
+      el.textContent = 'abc';
+      const exec = selfHandlingEditor(el);
+      el.focus();
+      expect(pageRun({ op: 'press', origins: origins(), key: 'Backspace' })).toEqual({ ok: true, op: 'press' });
+      expect(exec).toHaveBeenCalledWith('delete');
+    });
   });
 
   it('clicks only when the element is reachable', () => {

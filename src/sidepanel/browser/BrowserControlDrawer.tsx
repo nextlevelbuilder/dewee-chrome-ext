@@ -381,11 +381,12 @@ export function BrowserControlDrawer({ state, agents, agent, profileId, call, on
             ) : null}
             <ApprovalCards approvals={state.approvals} call={call} />
             <SharedTabs shares={state.shares} call={call} />
+            {/* One click for both modes: sharing registers this browser first when needed. */}
+            {state.connection === 'connected' ? <ShareTab state={state} agent={agent} call={call} /> : null}
             <AgentTabs tabs={state.tabs} />
             <Timeline timeline={state.timeline} />
             {state.connection === 'connected' && cloud ? (
               <>
-                <ShareTab state={state} agent={agent} call={call} />
                 {state.device ? <DeviceSection device={state.device} call={call} /> : null}
                 {state.device ? <GrantList grants={state.grants} agents={agents} call={call} /> : null}
               </>

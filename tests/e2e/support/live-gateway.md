@@ -37,7 +37,7 @@ Build `dewee` from a Dewee checkout and start it with a fresh PostgreSQL databas
 | `GOCLAW_ALLOW_PRIVATE_PROVIDER_URLS` | `1`, so a provider may point at the loopback stub |
 | `GOCLAW_TELEMETRY_ENABLED` | `false` |
 
-Rate limit: chat streams and card answers each get their own per-key budget of `gateway.rate_limit_rpm` (default 20 per minute). The full live run still needs more, because its chat streams alone pass 20 per minute. The database system config wins over `config.json`, so raise it with `PUT /v1/system-configs/gateway.rate_limit_rpm` (admin token, for example `120`) and restart the Gateway.
+Rate limit: reads, chat streams and card answers each get their own per-key budget of `gateway.rate_limit_rpm` (default 120 per minute, burst 20, since the Gateway fix in nextlevelbuilder/dewee#2925). An older Gateway defaults to 20 per minute with a burst of 5, which the full live run passes: opening the panel alone refuses the history read. The database system config wins over `config.json`, so on such a Gateway raise it with `PUT /v1/system-configs/gateway.rate_limit_rpm` (admin token, for example `120`) and restart the Gateway.
 
 ## 3. Tenant, agents and personal key
 

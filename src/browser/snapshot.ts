@@ -36,7 +36,9 @@ export type PageErrorCode = 'stale_ref' | 'element_not_found' | 'element_not_int
 export type PageResponse =
   | { ok: true; op: 'snapshot'; text: string; url: string; title: string }
   | { ok: true; op: 'describe'; role: string; name: string; sensitive: boolean; editable: boolean }
-  | { ok: true; op: 'click' | 'highlight' | 'type' | 'press' | 'scroll' | 'watch' }
+  | { ok: true; op: 'click' | 'highlight' | 'press' | 'scroll' | 'watch' }
+  /** value: the field's text afterwards, clipped; submitted: a form submit was requested (a synthetic Enter is not one). */
+  | { ok: true; op: 'type'; value?: string; submitted?: boolean }
   | { ok: true; op: 'findText'; found: boolean }
   /** `effect: 'maybe'`: the step failed after events had already been dispatched to the page. */
   | { ok: false; code: PageErrorCode; effect?: 'maybe' };
@@ -49,6 +51,8 @@ export function pageRun(request: PageRequest): PageResponse {
   const MUTATION_LIMIT = 200;
   const TEXT_LINE_MAX = 300;
   const VALUE_MAX = 200;
+  /** Mirrors TYPED_VALUE_MAX in protocol.ts (this function is serialized, so it cannot import it). */
+  const TYPED_VALUE_MAX = 2000;
 
   interface RefState {
     generation: number;
@@ -377,6 +381,53 @@ export function pageRun(request: PageRequest): PageResponse {
     el.dispatchEvent(new view.MouseEvent('mouseup', init));
   }
 
+  /** Whitespace-insensitive text of a rich editor, for checking what a step left in it. */
+  function editorText(el: Element): string {
+    return ((el as HTMLElement).innerText ?? el.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  function selectAllIn(el: Element) {
+    const doc = el.ownerDocument;
+    const selection = doc.getSelection();
+    const range = doc.createRange();
+    range.selectNodeContents(el);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  /**
+   * Replaces the text of a contenteditable editor. insertText goes through the editor's own input
+   * handling (Draft.js, Lexical, ProseMirror). Those editors often cancel the native insertion and
+   * apply it themselves, so execCommand reports false although the text is in: writing textContent
+   * then would insert it a second time. The plain-text fallback runs only when nothing changed, and a
+   * doubled or partial result is replaced once more through the editor.
+   */
+  function replaceEditableText(el: Element, text: string) {
+    const doc = el.ownerDocument;
+    const want = text.replace(/\s+/g, ' ').trim();
+    const before = editorText(el);
+    selectAllIn(el);
+    const canExec = typeof doc.execCommand === 'function';
+    const inserted = canExec && (text ? doc.execCommand('insertText', false, text) : doc.execCommand('delete'));
+    if (!inserted && editorText(el) === before && before !== want) {
+      el.textContent = text;
+      el.dispatchEvent(new (doc.defaultView ?? window).Event('input', { bubbles: true, composed: true }));
+      return;
+    }
+    // Retry only a clear doubling or a lost insertion, and only while the element is still the live,
+    // focused editor: an editor that re-rendered (new node) or rewrote the text (emoji, mentions,
+    // smart quotes) is left alone, so the retry never deletes at a caret somewhere else.
+    const after = editorText(el);
+    const doubled = want !== '' && after.split(want).length > 2;
+    const lost = want !== '' && before !== want && after === before;
+    const live = el.isConnected && el.contains(doc.activeElement);
+    if (canExec && live && (doubled || lost)) {
+      selectAllIn(el);
+      doc.execCommand('delete');
+      if (text) doc.execCommand('insertText', false, text);
+    }
+  }
+
   function setValue(el: Element, text: string) {
     const view = el.ownerDocument.defaultView ?? window;
     const proto = tagOf(el) === 'TEXTAREA' ? view.HTMLTextAreaElement.prototype : view.HTMLInputElement.prototype;
@@ -495,22 +546,14 @@ export function pageRun(request: PageRequest): PageResponse {
         if (tag === 'INPUT' || tag === 'TEXTAREA') {
           setValue(el, request.text);
         } else {
-          const doc = el.ownerDocument;
-          const selection = doc.getSelection();
-          const range = doc.createRange();
-          range.selectNodeContents(el);
-          selection?.removeAllRanges();
-          selection?.addRange(range);
-          // insertText goes through the editor's own input handling; fall back to plain text.
-          const inserted = typeof doc.execCommand === 'function' && doc.execCommand('insertText', false, request.text);
-          if (!inserted) {
-            el.textContent = request.text;
-            el.dispatchEvent(new (doc.defaultView ?? window).Event('input', { bubbles: true, composed: true }));
-          }
+          replaceEditableText(el, request.text);
         }
+        let submitted = false;
         if (request.submit) {
           const form = (el as HTMLInputElement).form;
           if (form) {
+            // requestSubmit does nothing when validation fails: report only a submit that can happen.
+            submitted = form.checkValidity();
             if (typeof form.requestSubmit === 'function') form.requestSubmit();
             else form.submit();
           } else {
@@ -518,7 +561,13 @@ export function pageRun(request: PageRequest): PageResponse {
             key(el, 'Enter', 'keyup');
           }
         }
-        return { ok: true, op: 'type' };
+        const now = tag === 'INPUT' || tag === 'TEXTAREA' ? (el as HTMLInputElement).value : editorText(el);
+        // Without a form, a page that accepted the Enter usually clears or removes the field: report
+        // that as sent, so the agent does not click send again and post twice.
+        if (request.submit && !(el as HTMLInputElement).form && request.text.trim() !== '' && (!el.isConnected || now.trim() === '')) submitted = true;
+        // Clip by code points, so an emoji is never cut in half.
+        const chars = Array.from(now);
+        return { ok: true, op: 'type', value: chars.length > TYPED_VALUE_MAX ? chars.slice(0, TYPED_VALUE_MAX).join('') : now, submitted };
       }
       case 'press': {
         const doc = document;
@@ -539,6 +588,9 @@ export function pageRun(request: PageRequest): PageResponse {
             next?.focus();
           } else if (request.key === 'Backspace' && editing && (tagOf(target) === 'INPUT' || tagOf(target) === 'TEXTAREA')) {
             if (!isSensitive(target)) setValue(target, (target as HTMLInputElement).value.slice(0, -1));
+          } else if (request.key === 'Backspace' && editing) {
+            // Rich editors (contenteditable) delete through their own input handling.
+            if (typeof target.ownerDocument.execCommand === 'function') target.ownerDocument.execCommand('delete');
           } else if (!editing) {
             const delta: Partial<Record<PressKey, number>> = { PageDown: page, PageUp: -page, ArrowDown: 40, ArrowUp: -40, ArrowRight: 0, ArrowLeft: 0 };
             if (request.key === 'Home') window.scrollTo({ top: 0 });
